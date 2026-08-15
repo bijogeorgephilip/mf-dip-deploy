@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.express as px
 
 # --- APP CONFIGURATION ---
-st.set_page_config(page_title="MF Dip Analyzer", page_icon="📉", layout="wide")
+st.set_page_config(page_title="MF Dip Analyzer Pro", page_icon="📉", layout="wide")
 
 # --- PREMIUM TRADING TERMINAL THEME CSS ---
 st.markdown(
@@ -34,33 +34,31 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# --- FULL MUTUAL FUND PORTFOLIO DATA (Adding up to 100% Weight) ---
-# Tickers like "NIFTY_MIDCAP" or "CASH" are proxy trackers for the "tail" of the fund
+# --- FULL MUTUAL FUND PORTFOLIO DATA ---
 funds = {
     "HDFC Flexi Cap": {
         "ICICIBANK.NS": 0.088, "HDFCBANK.NS": 0.065, "AXISBANK.NS": 0.052,
         "SBIN.NS": 0.048, "KOTAKBANK.NS": 0.035, "BHARTIARTL.NS": 0.032,
         "LT.NS": 0.030, "CIPLA.NS": 0.028, "HCLTECH.NS": 0.025, "RELIANCE.NS": 0.021,
         "INFY.NS": 0.018, "TCS.NS": 0.015, "ITC.NS": 0.012, "BAJFINANCE.NS": 0.010,
-        "^NSEMDCP50": 0.400, # Proxy for the 40% mid/small cap tail
-        "CASH": 0.121 # Remaining balance
+        "NTPC.NS": 0.009, "SUNPHARMA.NS": 0.008, "M&M.NS": 0.007, "TITAN.NS": 0.006, 
+        "ASIANPAINT.NS": 0.005, "TATASTEEL.NS": 0.004,
+        "^NSEMDCP50": 0.482 # Adjusted to equal exactly 100%
     },
     "Parag Parikh Flexi Cap": {
         "HDFCBANK.NS": 0.082, "ITC.NS": 0.071, "POWERGRID.NS": 0.055,
         "ICICIBANK.NS": 0.051, "BAJFINANCE.NS": 0.048, "MARUTI.NS": 0.042,
         "HCLTECH.NS": 0.040, "COALINDIA.NS": 0.035, "CDSL.NS": 0.031, "RELIANCE.NS": 0.020,
-        "GOOGL": 0.060, "MSFT": 0.050, "AMZN": 0.045, "META": 0.040, # US Tech Exposure
-        "^NSEI": 0.180, # Proxy for other standard Indian equities
-        "CASH": 0.150 # Famous PPFC high cash/arbitrage buffer
+        "GOOGL": 0.060, "MSFT": 0.050, "AMZN": 0.045, "META": 0.040, 
+        "^NSEI": 0.180, "CASH": 0.150 
     },
     "Helios Flexi Cap": {
         "ICICIBANK.NS": 0.055, "HDFCBANK.NS": 0.052, "SBIN.NS": 0.041,
         "RELIANCE.NS": 0.038, "LT.NS": 0.035, "ITC.NS": 0.032,
         "INFY.NS": 0.030, "TCS.NS": 0.028, "AXISBANK.NS": 0.025, "ZOMATO.NS": 0.020,
         "PAYTM.NS": 0.015, "TRENT.NS": 0.012, "INDIGO.NS": 0.010, "DIXON.NS": 0.009,
-        "HAL.NS": 0.008, "BEL.NS": 0.007,
-        "^NSEMDCP50": 0.500, # Heavy mid/small thematic tail
-        "CASH": 0.083
+        "HAL.NS": 0.008, "BEL.NS": 0.007, "SWIGGY.NS": 0.006,
+        "^NSEMDCP50": 0.577 
     }
 }
 
@@ -86,9 +84,8 @@ def fetch_live_data(tickers):
     changes = {}
     for ticker in tickers:
         if ticker == "CASH":
-            changes[ticker] = 0.0 # Cash doesn't drop in a market crash
+            changes[ticker] = 0.0
             continue
-            
         try:
             hist = yf.Ticker(ticker).history(period="2d")
             if len(hist) >= 2:
@@ -101,8 +98,8 @@ def fetch_live_data(tickers):
     return changes
 
 # --- MAIN UI ---
-st.title("📉 MP Dip Analyzer")
-st.caption("Full-Weight Portfolio Simulation")
+st.title("📉 Mutual Fund Dip Analyzer Pro")
+st.caption("Full-Weight Portfolio Simulation & Execution Engine")
 
 # 1. MARKET PULSE
 idx_data = fetch_index_data()
@@ -112,7 +109,7 @@ col2.metric("SENSEX", f"{idx_data['SENSEX']['value']:,.2f}", f"{idx_data['SENSEX
 st.divider()
 
 if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
-    with st.spinner("Crunching 100% NAV equivalents..."):
+    with st.spinner("Crunching 100% NAV equivalents & Generating Treemaps..."):
         all_tickers = set(t for fund in funds.values() for t in fund.keys())
         live_changes = fetch_live_data(all_tickers)
         
@@ -123,6 +120,7 @@ if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
         best_fund = min(fund_impacts, key=fund_impacts.get)
         best_impact = fund_impacts[best_fund]
         
+        # 2. DEPLOYMENT TARGET
         st.subheader("🎯 System Recommendation")
         if best_impact >= 0:
             st.info("⚖️ **HOLD CASH.** Based on 100% portfolio weighting, no significant dip detected.")
@@ -131,6 +129,7 @@ if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
             st.write(f"Estimated Total NAV Drop: **{best_impact:.2f}%**")
         st.divider()
         
+        # 3. DIAGNOSTICS & VISUALIZATION
         st.subheader("Deep Diagnostics (100% Allocation Mapping)")
         search_query = st.text_input("🔍 Filter by Stock (e.g., 'HDFC')").upper()
         
@@ -143,7 +142,6 @@ if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
             with tab:
                 df_data = []
                 for ticker, weight in holdings.items():
-                    # Clean up proxy names for the user interface
                     if ticker == "^NSEMDCP50": stock_name = "Other Mid/Small Cap Basket"
                     elif ticker == "^NSEI": stock_name = "Other Large Cap Basket"
                     elif ticker == "CASH": stock_name = "Cash & Arbitrage Buffer"
@@ -158,9 +156,14 @@ if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
                     })
                 
                 df_full = pd.DataFrame(df_data).sort_values(by="Allocation", ascending=False)
-                chart_col, table_col = st.columns([1, 1.2])
+                
+                # Assign a generic "Category" for the Treemap grouping
+                df_full['Category'] = 'Portfolio Assets'
+                
+                chart_col, table_col = st.columns([1.5, 1]) # Treemap needs more width
                 
                 with table_col:
+                    st.markdown("**Live Asset Impact**")
                     if search_query:
                         df_display = df_full[df_full["Asset"].str.upper().str.contains(search_query)]
                     else:
@@ -172,10 +175,26 @@ if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
                     st.dataframe(styled_df, use_container_width=True, hide_index=True)
                 
                 with chart_col:
-                    fig = px.pie(df_full, values='Allocation', names='Asset', hole=0.6,
-                               color_discrete_sequence=px.colors.qualitative.Bold)
-                    fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                                    font=dict(color='#e2e8f0'), margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
-                    fig.update_traces(textposition='inside', textinfo='percent+label',
-                                    hovertemplate="<b>%{label}</b><br>Weight: %{percent}<extra></extra>")
+                    st.markdown("**Fund Architecture (Treemap)**")
+                    # Build Treemap
+                    fig = px.treemap(
+                        df_full, 
+                        path=['Category', 'Asset'], 
+                        values='Allocation',
+                        color='Allocation',
+                        color_continuous_scale='Tealgrn' # Sleek dark-mode compatible gradient
+                    )
+                    
+                    fig.update_layout(
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        font=dict(color='#e2e8f0'),
+                        margin=dict(t=10, b=10, l=10, r=10)
+                    )
+                    
+                    fig.update_traces(
+                        textinfo="label+percent entry",
+                        hovertemplate="<b>%{label}</b><br>Allocation: %{value:.2f}%<extra></extra>"
+                    )
+                    
                     st.plotly_chart(fig, use_container_width=True)
