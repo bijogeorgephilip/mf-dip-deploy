@@ -46,4 +46,4 @@ def fetch_index_data():
     for name, ticker in indices.items():
         try:
             hist = yf.Ticker(ticker).history(period="2d")
-            if len(hist)
+            if len(hist) >= 2:
