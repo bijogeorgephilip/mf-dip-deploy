@@ -1,6 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import plotly.express as px
 
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="MF Dip Analyzer Pro", page_icon="📉", layout="wide")
@@ -11,23 +12,21 @@ st.markdown(
     <style>
     /* Main Background - Stock Chart Grid Style */
     .stApp {
-        background-color: #0b0e14; /* Deep terminal black */
+        background-color: #0b0e14;
         background-image: 
             linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
             linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-        background-size: 30px 30px; /* Subtle chart grid */
+        background-size: 30px 30px;
         color: #e2e8f0;
         font-family: 'Inter', sans-serif;
     }
     
-    /* Headings */
     h1, h2, h3 {
         color: #f8fafc !important;
         font-weight: 600;
         text-shadow: 0px 2px 4px rgba(0,0,0,0.5);
     }
     
-    /* Metric Cards */
     div[data-testid="stMetricValue"] {
         color: #ffffff;
         font-size: 2.2rem;
@@ -38,7 +37,6 @@ st.markdown(
         font-weight: 600;
     }
     
-    /* Tabs */
     .stTabs [data-baseweb="tab-list"] {
         gap: 24px;
         background-color: transparent;
@@ -54,16 +52,14 @@ st.markdown(
         border-bottom: 2px solid #38bdf8 !important;
     }
     
-    /* Dataframes/Tables */
     .stDataFrame {
-        background-color: rgba(30, 41, 59, 0.85); /* Slightly transparent to show grid */
+        background-color: rgba(30, 41, 59, 0.85);
         border-radius: 8px;
         padding: 10px;
         border: 1px solid #334155;
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
     }
     
-    /* Buttons */
     .stButton>button {
         background-color: #2563eb;
         color: #ffffff;
@@ -81,7 +77,6 @@ st.markdown(
         box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
     }
     
-    /* Input Fields */
     .stTextInput>div>div>input {
         background-color: rgba(30, 41, 59, 0.8);
         color: #f8fafc;
@@ -96,7 +91,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# --- MUTUAL FUND PORTFOLIO DATA (Top 10 Approx Weights) ---
+# --- MUTUAL FUND PORTFOLIO DATA ---
 funds = {
     "HDFC Flexi Cap": {
         "ICICIBANK.NS": 0.088, "HDFCBANK.NS": 0.065, "AXISBANK.NS": 0.052,
@@ -166,7 +161,7 @@ with col2:
 st.divider()
 
 if st.button("EXECUTE MARKET SCAN"):
-    with st.spinner("Analyzing Top Holdings..."):
+    with st.spinner("Analyzing Top Holdings & Generating Visuals..."):
         all_tickers = set()
         for holdings in funds.values():
             all_tickers.update(holdings.keys())
@@ -191,7 +186,7 @@ if st.button("EXECUTE MARKET SCAN"):
         
         st.divider()
         
-        # 3. PORTFOLIO BREAKDOWN
+        # 3. PORTFOLIO BREAKDOWN & VISUALIZATION
         st.subheader("Portfolio Diagnostics")
         
         search_query = st.text_input("🔍 Filter by Stock (e.g., 'HDFC')").upper()
@@ -199,18 +194,17 @@ if st.button("EXECUTE MARKET SCAN"):
         tabs = st.tabs(list(funds.keys()))
         
         def color_returns(val):
-            # Using TradingView style neon red and green for maximum contrast
             color = '#f23645' if val < 0 else '#089981'
             return f'color: {color}; font-weight: 600;'
 
         for tab, (fund_name, holdings) in zip(tabs, funds.items()):
             with tab:
+                # Build data for both Table and Chart
                 df_data = []
                 for ticker, weight in holdings.items():
                     stock_name = ticker.replace(".NS", "")
-                    if search_query and search_query not in stock_name:
-                        continue
-                        
+                    
+                    # Ensure charting data is built even if filtered out of the table
                     change = live_changes.get(ticker, 0.0)
                     df_data.append({
                         "Asset": stock_name,
@@ -219,16 +213,55 @@ if st.button("EXECUTE MARKET SCAN"):
                         "Net Drag/Lift": change * weight 
                     })
                 
-                if df_data:
-                    df = pd.DataFrame(df_data)
-                    df = df.sort_values(by="Allocation", ascending=False)
+                df_full = pd.DataFrame(df_data)
+                df_full = df_full.sort_values(by="Allocation", ascending=False)
+                
+                # Setup Layout for Table (Left) and Chart (Right)
+                chart_col, table_col = st.columns([1, 1])
+                
+                with table_col:
+                    st.markdown("**Live Asset Impact (Top 10)**")
+                    # Apply search filter only to the table
+                    if search_query:
+                        df_display = df_full[df_full["Asset"].str.contains(search_query)]
+                    else:
+                        df_display = df_full
+
+                    if not df_display.empty:
+                        styled_df = df_display.style.map(color_returns, subset=["Intraday Move", "Net Drag/Lift"]).format({
+                            "Allocation": "{:.2f}%",
+                            "Intraday Move": "{:.2f}%",
+                            "Net Drag/Lift": "{:.3f}%"
+                        })
+                        st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.info(f"No matching assets found in {fund_name}.")
+                
+                with chart_col:
+                    st.markdown("**Allocation Visualizer**")
+                    # Create Interactive Donut Chart using Plotly
+                    fig = px.pie(
+                        df_full, 
+                        values='Allocation', 
+                        names='Asset', 
+                        hole=0.5, # Makes it a donut
+                        color_discrete_sequence=px.colors.qualitative.Prism
+                    )
                     
-                    styled_df = df.style.map(color_returns, subset=["Intraday Move", "Net Drag/Lift"]).format({
-                        "Allocation": "{:.2f}%",
-                        "Intraday Move": "{:.2f}%",
-                        "Net Drag/Lift": "{:.3f}%"
-                    })
+                    # Style chart for dark mode
+                    fig.update_layout(
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        font=dict(color='#e2e8f0'),
+                        margin=dict(t=0, b=0, l=0, r=0),
+                        showlegend=False
+                    )
                     
-                    st.dataframe(styled_df, use_container_width=True, hide_index=True)
-                else:
-                    st.info(f"No matching assets found in {fund_name}.")
+                    # Add hover info and text position
+                    fig.update_traces(
+                        textposition='inside', 
+                        textinfo='percent+label',
+                        hovertemplate="<b>%{label}</b><br>Weight: %{percent}<extra></extra>"
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
