@@ -5,14 +5,78 @@ import pandas as pd
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="MF Dip Analyzer Pro", page_icon="📉", layout="wide")
 
-# --- CUSTOM UI THEME ---
-# Injects a sleek dark premium financial gradient background
+# --- PREMIUM DARK THEME CSS ---
 st.markdown(
     """
     <style>
+    /* Main Background */
     .stApp {
-        background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
-        color: white;
+        background: linear-gradient(180deg, #0b0f19 0%, #1a2235 100%);
+        color: #e2e8f0;
+        font-family: 'Inter', sans-serif;
+    }
+    
+    /* Headings */
+    h1, h2, h3 {
+        color: #f8fafc !important;
+        font-weight: 600;
+    }
+    
+    /* Metric Cards */
+    div[data-testid="stMetricValue"] {
+        color: #f8fafc;
+        font-size: 2rem;
+    }
+    div[data-testid="stMetricDelta"] {
+        font-size: 1.2rem;
+    }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 24px;
+        background-color: transparent;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        color: #94a3b8;
+        font-size: 1.1rem;
+        border-bottom: 2px solid transparent;
+    }
+    .stTabs [aria-selected="true"] {
+        color: #38bdf8 !important;
+        border-bottom: 2px solid #38bdf8 !important;
+    }
+    
+    /* Dataframes/Tables */
+    .stDataFrame {
+        background-color: #1e293b;
+        border-radius: 8px;
+        padding: 10px;
+        border: 1px solid #334155;
+    }
+    
+    /* Buttons */
+    .stButton>button {
+        background-color: #38bdf8;
+        color: #0f172a;
+        border-radius: 6px;
+        font-weight: 600;
+        border: none;
+        padding: 0.5rem 1rem;
+        transition: all 0.2s ease;
+    }
+    .stButton>button:hover {
+        background-color: #0ea5e9;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
+    
+    /* Input Fields */
+    .stTextInput>div>div>input {
+        background-color: #1e293b;
+        color: #f8fafc;
+        border: 1px solid #334155;
+        border-radius: 6px;
     }
     </style>
     """,
@@ -73,22 +137,24 @@ def fetch_live_data(tickers):
     return changes
 
 # --- MAIN UI ---
-st.title("📉 Mutual Fund Dip Analyzer Pro")
-st.markdown("Automated Tranche Deployment Dashboard based on Live Underlying Assets.")
+st.title("📉 Institutional Dip Analyzer")
+st.caption("Automated Lumpsum Deployment System")
 
-# 1. MARKET PULSE (Indices)
-st.subheader("🌐 Live Market Pulse")
+# 1. MARKET PULSE
+st.subheader("Live Market Pulse")
 idx_data = fetch_index_data()
-col1, col2, _ = st.columns([1, 1, 2])
 
-col1.metric("NIFTY 50", f"{idx_data['NIFTY 50']['value']:,.2f}", f"{idx_data['NIFTY 50']['change']:.2f}%")
-col2.metric("SENSEX", f"{idx_data['SENSEX']['value']:,.2f}", f"{idx_data['SENSEX']['change']:.2f}%")
+# Styling metrics using columns
+col1, col2, _ = st.columns([1, 1, 2])
+with col1:
+    st.metric("NIFTY 50", f"{idx_data['NIFTY 50']['value']:,.2f}", f"{idx_data['NIFTY 50']['change']:.2f}%")
+with col2:
+    st.metric("SENSEX", f"{idx_data['SENSEX']['value']:,.2f}", f"{idx_data['SENSEX']['change']:.2f}%")
 
 st.divider()
 
-if st.button("🔄 Analyze Live Mutual Fund Dips"):
-    with st.spinner("Crunching NSE data for Top 10 Holdings..."):
-        
+if st.button("🔄 Execute Market Scan"):
+    with st.spinner("Analyzing Top Holdings..."):
         all_tickers = set()
         for holdings in funds.values():
             all_tickers.update(holdings.keys())
@@ -103,59 +169,54 @@ if st.button("🔄 Analyze Live Mutual Fund Dips"):
         best_fund = min(fund_impacts, key=fund_impacts.get)
         best_impact = fund_impacts[best_fund]
         
-        # 2. DEPLOYMENT RECOMMENDATION
-        st.subheader("🎯 Deployment Target")
+        # 2. DEPLOYMENT TARGET
+        st.subheader("🎯 System Recommendation")
         if best_impact >= 0:
-            st.warning("⚖️ **HOLD CASH.** All tracked funds are estimated flat or positive today.")
+            st.info("⚖️ **HOLD CASH.** Market conditions do not meet dip criteria today.")
         else:
-            st.success(f"🔥 **DEPLOY TO: {best_fund}** (Estimated Top 10 Impact: **{best_impact:.2f}%**)")
+            st.success(f"🔥 **ALLOCATE TO:** {best_fund}")
+            st.write(f"Estimated drag from Top 10 holdings: **{best_impact:.2f}%**")
         
         st.divider()
         
-        # 3. DEEP DIVE VISUALIZATIONS
-        st.subheader("📊 Top 10 Holdings Breakdown")
+        # 3. PORTFOLIO BREAKDOWN
+        st.subheader("Portfolio Diagnostics")
         
-        # --- NEW FILTER FEATURE ---
-        search_query = st.text_input("🔍 Filter Stocks by Name (e.g., 'HDFC')").upper()
-        
-        st.caption("Holdings ordered by portfolio weight. Negative impacts highlighted in red.")
+        search_query = st.text_input("🔍 Filter by Stock (e.g., 'HDFC')").upper()
         
         tabs = st.tabs(list(funds.keys()))
         
         def color_returns(val):
-            color = '#ff4b4b' if val < 0 else '#09ab3b'
-            return f'color: {color}; font-weight: bold;'
+            color = '#ef4444' if val < 0 else '#22c55e' # Vibrant red/green for dark mode
+            return f'color: {color}; font-weight: 600;'
 
         for tab, (fund_name, holdings) in zip(tabs, funds.items()):
             with tab:
                 df_data = []
                 for ticker, weight in holdings.items():
                     stock_name = ticker.replace(".NS", "")
-                    
-                    # Apply search filter
                     if search_query and search_query not in stock_name:
                         continue
                         
                     change = live_changes.get(ticker, 0.0)
                     df_data.append({
-                        "Stock": stock_name,
-                        "Weight (%)": weight * 100,
-                        "Today's Change (%)": change,
-                        "Fund Impact": change * weight 
+                        "Asset": stock_name,
+                        "Allocation": weight * 100,
+                        "Intraday Move": change,
+                        "Net Drag/Lift": change * weight 
                     })
                 
                 if df_data:
                     df = pd.DataFrame(df_data)
+                    df = df.sort_values(by="Allocation", ascending=False)
                     
-                    # --- UPDATED SORTING: Now sorts by Weight (Highest to Lowest) ---
-                    df = df.sort_values(by="Weight (%)", ascending=False)
-                    
-                    styled_df = df.style.map(color_returns, subset=["Today's Change (%)", "Fund Impact"]).format({
-                        "Weight (%)": "{:.2f}%",
-                        "Today's Change (%)": "{:.2f}%",
-                        "Fund Impact": "{:.3f}%"
+                    # Apply premium styling to dataframe
+                    styled_df = df.style.map(color_returns, subset=["Intraday Move", "Net Drag/Lift"]).format({
+                        "Allocation": "{:.2f}%",
+                        "Intraday Move": "{:.2f}%",
+                        "Net Drag/Lift": "{:.3f}%"
                     })
                     
                     st.dataframe(styled_df, use_container_width=True, hide_index=True)
                 else:
-                    st.info(f"No stocks matching '{search_query}' found in the top holdings of {fund_name}.")
+                    st.info(f"No matching assets found in {fund_name}.")
