@@ -5,13 +5,17 @@ import pandas as pd
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="MF Dip Analyzer Pro", page_icon="📉", layout="wide")
 
-# --- PREMIUM DARK THEME CSS ---
+# --- PREMIUM TRADING TERMINAL THEME CSS ---
 st.markdown(
     """
     <style>
-    /* Main Background */
+    /* Main Background - Stock Chart Grid Style */
     .stApp {
-        background: linear-gradient(180deg, #0b0f19 0%, #1a2235 100%);
+        background-color: #0b0e14; /* Deep terminal black */
+        background-image: 
+            linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+        background-size: 30px 30px; /* Subtle chart grid */
         color: #e2e8f0;
         font-family: 'Inter', sans-serif;
     }
@@ -20,15 +24,18 @@ st.markdown(
     h1, h2, h3 {
         color: #f8fafc !important;
         font-weight: 600;
+        text-shadow: 0px 2px 4px rgba(0,0,0,0.5);
     }
     
     /* Metric Cards */
     div[data-testid="stMetricValue"] {
-        color: #f8fafc;
-        font-size: 2rem;
+        color: #ffffff;
+        font-size: 2.2rem;
+        font-weight: 700;
     }
     div[data-testid="stMetricDelta"] {
         font-size: 1.2rem;
+        font-weight: 600;
     }
     
     /* Tabs */
@@ -38,45 +45,51 @@ st.markdown(
     }
     .stTabs [data-baseweb="tab"] {
         height: 50px;
-        color: #94a3b8;
+        color: #64748b;
         font-size: 1.1rem;
         border-bottom: 2px solid transparent;
     }
     .stTabs [aria-selected="true"] {
-        color: #38bdf8 !important;
+        color: #e2e8f0 !important;
         border-bottom: 2px solid #38bdf8 !important;
     }
     
     /* Dataframes/Tables */
     .stDataFrame {
-        background-color: #1e293b;
+        background-color: rgba(30, 41, 59, 0.85); /* Slightly transparent to show grid */
         border-radius: 8px;
         padding: 10px;
         border: 1px solid #334155;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
     }
     
     /* Buttons */
     .stButton>button {
-        background-color: #38bdf8;
-        color: #0f172a;
-        border-radius: 6px;
+        background-color: #2563eb;
+        color: #ffffff;
+        border-radius: 4px;
         font-weight: 600;
-        border: none;
-        padding: 0.5rem 1rem;
+        border: 1px solid #1d4ed8;
+        padding: 0.5rem 1.5rem;
         transition: all 0.2s ease;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
     }
     .stButton>button:hover {
-        background-color: #0ea5e9;
+        background-color: #1d4ed8;
         transform: translateY(-1px);
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
     }
     
     /* Input Fields */
     .stTextInput>div>div>input {
-        background-color: #1e293b;
+        background-color: rgba(30, 41, 59, 0.8);
         color: #f8fafc;
-        border: 1px solid #334155;
-        border-radius: 6px;
+        border: 1px solid #475569;
+        border-radius: 4px;
+    }
+    .stTextInput>div>div>input:focus {
+        border-color: #38bdf8;
     }
     </style>
     """,
@@ -144,7 +157,6 @@ st.caption("Automated Lumpsum Deployment System")
 st.subheader("Live Market Pulse")
 idx_data = fetch_index_data()
 
-# Styling metrics using columns
 col1, col2, _ = st.columns([1, 1, 2])
 with col1:
     st.metric("NIFTY 50", f"{idx_data['NIFTY 50']['value']:,.2f}", f"{idx_data['NIFTY 50']['change']:.2f}%")
@@ -153,7 +165,7 @@ with col2:
 
 st.divider()
 
-if st.button("🔄 Execute Market Scan"):
+if st.button("EXECUTE MARKET SCAN"):
     with st.spinner("Analyzing Top Holdings..."):
         all_tickers = set()
         for holdings in funds.values():
@@ -187,7 +199,8 @@ if st.button("🔄 Execute Market Scan"):
         tabs = st.tabs(list(funds.keys()))
         
         def color_returns(val):
-            color = '#ef4444' if val < 0 else '#22c55e' # Vibrant red/green for dark mode
+            # Using TradingView style neon red and green for maximum contrast
+            color = '#f23645' if val < 0 else '#089981'
             return f'color: {color}; font-weight: 600;'
 
         for tab, (fund_name, holdings) in zip(tabs, funds.items()):
@@ -210,7 +223,6 @@ if st.button("🔄 Execute Market Scan"):
                     df = pd.DataFrame(df_data)
                     df = df.sort_values(by="Allocation", ascending=False)
                     
-                    # Apply premium styling to dataframe
                     styled_df = df.style.map(color_returns, subset=["Intraday Move", "Net Drag/Lift"]).format({
                         "Allocation": "{:.2f}%",
                         "Intraday Move": "{:.2f}%",
