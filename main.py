@@ -2,6 +2,8 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.express as px
+from datetime import datetime
+import pytz
 
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="MF Dip Analyzer Pro", page_icon="📉", layout="wide")
@@ -35,7 +37,6 @@ st.markdown(
 )
 
 # --- EXPANDED MUTUAL FUND PORTFOLIO DATA (Normalized to ~100%) ---
-# Replaced 'baskets' with massive arrays of actual underlying stocks to drive the heatmap
 funds = {
     "HDFC Flexi Cap": {
         "ICICIBANK.NS": 0.095, "HDFCBANK.NS": 0.075, "AXISBANK.NS": 0.065, "SBIN.NS": 0.055, 
@@ -80,7 +81,7 @@ def fetch_index_data():
         try:
             hist = yf.Ticker(ticker).history(period="2d")
             if len(hist) >= 2:
-                prev, curr = hist['Close'].iloc[0], hist['Close'].iloc[-1]
+                prev, curr = hist['Close'].iloc[-2], hist['Close'].iloc[-1]
                 data[name] = {"value": curr, "change": ((curr - prev) / prev) * 100}
             else:
                 data[name] = {"value": 0.0, "change": 0.0}
@@ -88,34 +89,39 @@ def fetch_index_data():
             data[name] = {"value": 0.0, "change": 0.0}
     return data
 
-@st.cache_data(ttl=60) # Increased TTL slightly so massive lists don't timeout frequently
+@st.cache_data(ttl=60)
 def fetch_live_data(tickers):
     changes = {}
-    # Fetching in bulk string is much faster for yfinance than looping
-    ticker_string = " ".join(tickers)
+    valid_tickers = [t for t in tickers if t != "CASH"]
     try:
-        data = yf.download(ticker_string, period="2d", group_by="ticker", progress=False)
-        for ticker in tickers:
+        # Bulk download and cleanly extract the 'Close' grid
+        data = yf.download(valid_tickers, period="2d", progress=False)
+        close_data = data['Close'] if len(valid_tickers) > 1 else data['Close'].to_frame(name=valid_tickers[0])
+        
+        for ticker in valid_tickers:
             try:
-                if len(tickers) == 1:
-                    hist = data['Close']
-                else:
-                    hist = data[ticker]['Close']
-                
+                hist = close_data[ticker].dropna()
                 if len(hist) >= 2:
-                    prev, curr = hist.iloc[0], hist.iloc[-1]
+                    prev, curr = hist.iloc[-2], hist.iloc[-1]
                     changes[ticker] = ((curr - prev) / prev) * 100
                 else:
                     changes[ticker] = 0.0
             except:
                 changes[ticker] = 0.0
     except:
-        for ticker in tickers: changes[ticker] = 0.0
+        for ticker in valid_tickers: changes[ticker] = 0.0
+        
+    changes["CASH"] = 0.0 # Safety buffer logic
     return changes
 
 # --- MAIN UI ---
-st.title("📉 Institutional Dip Analyzer Pro")
-st.caption("Full-Weight Portfolio Execution & Market Heatmap Engine")
+st.title("📉 MF Dip Analyzer Pro")
+
+# Current Date & Time (IST)
+ist_timezone = pytz.timezone('Asia/Kolkata')
+current_time = datetime.now(ist_timezone).strftime('%A, %d %b %Y | %I:%M %p IST')
+st.caption(f"**Last Market Sync:** {current_time}")
+st.markdown("Full-Weight Portfolio Execution & Market Heatmap Engine")
 
 # 1. MARKET PULSE
 idx_data = fetch_index_data()
@@ -125,7 +131,7 @@ col2.metric("SENSEX", f"{idx_data['SENSEX']['value']:,.2f}", f"{idx_data['SENSEX
 st.divider()
 
 if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
-    with st.spinner("Downloading live data for 100+ underlying assets... (This may take a few seconds)"):
+    with st.spinner("Downloading live data and executing NAV drop algorithms..."):
         all_tickers = set(t for fund in funds.values() for t in fund.keys())
         live_changes = fetch_live_data(all_tickers)
         
@@ -168,8 +174,6 @@ if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
                     })
                 
                 df_full = pd.DataFrame(df_data).sort_values(by="Allocation", ascending=False)
-                
-                # Assign generic root for Treemap grouping
                 df_full['Portfolio'] = fund_name
                 
                 chart_col, table_col = st.columns([1.5, 1]) 
@@ -184,21 +188,18 @@ if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
                     styled_df = df_display.style.map(color_returns, subset=["Intraday Move", "Net Drag/Lift"]).format({
                         "Allocation": "{:.2f}%", "Intraday Move": "{:.2f}%", "Net Drag/Lift": "{:.3f}%"
                     })
-                    # Use a fixed height so massive lists scroll cleanly
                     st.dataframe(styled_df, use_container_width=True, hide_index=True, height=500)
                 
                 with chart_col:
                     st.markdown("**Performance Heatmap**")
-                    # Build TRUE Stock Market Heatmap (Size = Weight, Color = % Change)
                     fig = px.treemap(
                         df_full, 
                         path=['Portfolio', 'Asset'], 
                         values='Allocation',
-                        color='Intraday Move', # Coloring by performance now!
-                        color_continuous_scale=['#f23645', '#1a2235', '#089981'], # Red -> Dark -> Green
+                        color='Intraday Move',
+                        color_continuous_scale=['#f23645', '#1a2235', '#089981'],
                         color_continuous_midpoint=0
                     )
-                    
                     fig.update_layout(
                         paper_bgcolor='rgba(0,0,0,0)',
                         plot_bgcolor='rgba(0,0,0,0)',
@@ -206,10 +207,8 @@ if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
                         margin=dict(t=10, b=10, l=10, r=10),
                         coloraxis_colorbar=dict(title="% Change", tickformat=".1f")
                     )
-                    
                     fig.update_traces(
-                        textinfo="label+value", # Shows Stock Name + Weight
+                        textinfo="label+value",
                         hovertemplate="<b>%{label}</b><br>Weight: %{value:.2f}%<br>Daily Change: %{color:.2f}%<extra></extra>"
                     )
-                    
                     st.plotly_chart(fig, use_container_width=True)
