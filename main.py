@@ -32,7 +32,6 @@ st.markdown(
     .stButton>button:hover { background-color: #1d4ed8; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4); }
     .stTextInput>div>div>input { background-color: rgba(30, 41, 59, 0.8); color: #f8fafc; border: 1px solid #475569; border-radius: 4px; }
     
-    /* Custom Styling for the Comparison Cards */
     .fund-card {
         background-color: #1e293b;
         border: 1px solid #334155;
@@ -161,21 +160,17 @@ if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
             st.success(f"🔥 **ALLOCATE TO:** {best_fund}")
             st.write(f"Estimated Total NAV Drop: **{best_impact:.2f}%**")
             
-        # --- NEW: FUND COMPARISON DASHBOARD ---
+        # --- FUND COMPARISON DASHBOARD ---
         st.write("---")
         st.subheader("📊 Cross-Fund Comparison")
         st.caption("Side-by-side view of all tracked NAV impacts.")
         
-        # Create a dynamic number of columns based on how many funds are tracked
         comp_cols = st.columns(len(funds))
         
         for i, (fund_name, impact) in enumerate(fund_impacts.items()):
-            # Determine color class
             val_class = "fund-val-red" if impact < 0 else "fund-val-green"
-            # Add an explicit plus sign for positive numbers
             sign = "+" if impact > 0 else ""
             
-            # Inject HTML for custom styled cards
             comp_cols[i].markdown(
                 f"""
                 <div class="fund-card">
@@ -211,6 +206,8 @@ if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
                     })
                 
                 df_full = pd.DataFrame(df_data).sort_values(by="Allocation", ascending=False)
+                
+                # We need this purely for the Treemap hierarchy, but we won't show it in the table
                 df_full['Portfolio'] = fund_name
                 
                 chart_col, table_col = st.columns([1.5, 1]) 
@@ -222,7 +219,10 @@ if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
                     else:
                         df_display = df_full
                     
-                    styled_df = df_display.style.map(color_returns, subset=["Intraday Move", "Net Drag/Lift"]).format({
+                    # --- NEW: Drop the redundant 'Portfolio' column before rendering the table ---
+                    df_display_clean = df_display.drop(columns=['Portfolio'])
+                    
+                    styled_df = df_display_clean.style.map(color_returns, subset=["Intraday Move", "Net Drag/Lift"]).format({
                         "Allocation": "{:.2f}%", "Intraday Move": "{:.2f}%", "Net Drag/Lift": "{:.3f}%"
                     })
                     st.dataframe(styled_df, use_container_width=True, hide_index=True, height=500)
