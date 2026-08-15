@@ -47,3 +47,115 @@ def fetch_index_data():
         try:
             hist = yf.Ticker(ticker).history(period="2d")
             if len(hist) >= 2:
+                prev = hist['Close'].iloc[0]
+                curr = hist['Close'].iloc[-1]
+                data[name] = {"value": curr, "change": ((curr - prev) / prev) * 100}
+            else:
+                data[name] = {"value": 0.0, "change": 0.0}
+        except:
+            data[name] = {"value": 0.0, "change": 0.0}
+    return data
+
+@st.cache_data(ttl=60)
+def fetch_live_data(tickers):
+    changes = {}
+    for ticker in tickers:
+        try:
+            hist = yf.Ticker(ticker).history(period="2d")
+            if len(hist) >= 2:
+                prev = hist['Close'].iloc[0]
+                curr = hist['Close'].iloc[-1]
+                changes[ticker] = ((curr - prev) / prev) * 100
+            else:
+                changes[ticker] = 0.0
+        except:
+            changes[ticker] = 0.0
+    return changes
+
+# --- MAIN UI ---
+st.title("📉 Mutual Fund Dip Analyzer Pro")
+st.markdown("Automated Tranche Deployment Dashboard based on Live Underlying Assets.")
+
+# 1. MARKET PULSE (Indices)
+st.subheader("🌐 Live Market Pulse")
+idx_data = fetch_index_data()
+col1, col2, _ = st.columns([1, 1, 2])
+
+col1.metric("NIFTY 50", f"{idx_data['NIFTY 50']['value']:,.2f}", f"{idx_data['NIFTY 50']['change']:.2f}%")
+col2.metric("SENSEX", f"{idx_data['SENSEX']['value']:,.2f}", f"{idx_data['SENSEX']['change']:.2f}%")
+
+st.divider()
+
+if st.button("🔄 Analyze Live Mutual Fund Dips"):
+    with st.spinner("Crunching NSE data for Top 10 Holdings..."):
+        
+        all_tickers = set()
+        for holdings in funds.values():
+            all_tickers.update(holdings.keys())
+        
+        live_changes = fetch_live_data(all_tickers)
+        
+        fund_impacts = {}
+        for fund_name, holdings in funds.items():
+            impact = sum([live_changes.get(t, 0) * w for t, w in holdings.items()])
+            fund_impacts[fund_name] = impact
+            
+        best_fund = min(fund_impacts, key=fund_impacts.get)
+        best_impact = fund_impacts[best_fund]
+        
+        # 2. DEPLOYMENT RECOMMENDATION
+        st.subheader("🎯 Deployment Target")
+        if best_impact >= 0:
+            st.warning("⚖️ **HOLD CASH.** All tracked funds are estimated flat or positive today.")
+        else:
+            st.success(f"🔥 **DEPLOY TO: {best_fund}** (Estimated Top 10 Impact: **{best_impact:.2f}%**)")
+        
+        st.divider()
+        
+        # 3. DEEP DIVE VISUALIZATIONS
+        st.subheader("📊 Top 10 Holdings Breakdown")
+        
+        # --- NEW FILTER FEATURE ---
+        search_query = st.text_input("🔍 Filter Stocks by Name (e.g., 'HDFC')").upper()
+        
+        st.caption("Holdings ordered by portfolio weight. Negative impacts highlighted in red.")
+        
+        tabs = st.tabs(list(funds.keys()))
+        
+        def color_returns(val):
+            color = '#ff4b4b' if val < 0 else '#09ab3b'
+            return f'color: {color}; font-weight: bold;'
+
+        for tab, (fund_name, holdings) in zip(tabs, funds.items()):
+            with tab:
+                df_data = []
+                for ticker, weight in holdings.items():
+                    stock_name = ticker.replace(".NS", "")
+                    
+                    # Apply search filter
+                    if search_query and search_query not in stock_name:
+                        continue
+                        
+                    change = live_changes.get(ticker, 0.0)
+                    df_data.append({
+                        "Stock": stock_name,
+                        "Weight (%)": weight * 100,
+                        "Today's Change (%)": change,
+                        "Fund Impact": change * weight 
+                    })
+                
+                if df_data:
+                    df = pd.DataFrame(df_data)
+                    
+                    # --- UPDATED SORTING: Now sorts by Weight (Highest to Lowest) ---
+                    df = df.sort_values(by="Weight (%)", ascending=False)
+                    
+                    styled_df = df.style.map(color_returns, subset=["Today's Change (%)", "Fund Impact"]).format({
+                        "Weight (%)": "{:.2f}%",
+                        "Today's Change (%)": "{:.2f}%",
+                        "Fund Impact": "{:.3f}%"
+                    })
+                    
+                    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info(f"No stocks matching '{search_query}' found in the top holdings of {fund_name}.")
