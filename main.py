@@ -31,6 +31,19 @@ st.markdown(
     .stButton>button { background-color: #2563eb; color: #ffffff; border-radius: 4px; font-weight: 600; border: 1px solid #1d4ed8; padding: 0.5rem 1.5rem; transition: all 0.2s ease; text-transform: uppercase; letter-spacing: 0.5px; }
     .stButton>button:hover { background-color: #1d4ed8; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4); }
     .stTextInput>div>div>input { background-color: rgba(30, 41, 59, 0.8); color: #f8fafc; border: 1px solid #475569; border-radius: 4px; }
+    
+    /* Custom Styling for the Comparison Cards */
+    .fund-card {
+        background-color: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        padding: 20px;
+        text-align: center;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+    }
+    .fund-title { font-size: 1.2rem; color: #94a3b8; margin-bottom: 10px; font-weight: 600; }
+    .fund-val-red { font-size: 2rem; color: #f23645; font-weight: 700; }
+    .fund-val-green { font-size: 2rem; color: #089981; font-weight: 700; }
     </style>
     """,
     unsafe_allow_html=True
@@ -94,7 +107,6 @@ def fetch_live_data(tickers):
     changes = {}
     valid_tickers = [t for t in tickers if t != "CASH"]
     try:
-        # Bulk download and cleanly extract the 'Close' grid
         data = yf.download(valid_tickers, period="2d", progress=False)
         close_data = data['Close'] if len(valid_tickers) > 1 else data['Close'].to_frame(name=valid_tickers[0])
         
@@ -111,13 +123,12 @@ def fetch_live_data(tickers):
     except:
         for ticker in valid_tickers: changes[ticker] = 0.0
         
-    changes["CASH"] = 0.0 # Safety buffer logic
+    changes["CASH"] = 0.0
     return changes
 
 # --- MAIN UI ---
-st.title("📉 MF Dip Analyzer Pro")
+st.title("📉 Institutional Dip Analyzer Pro")
 
-# Current Date & Time (IST)
 ist_timezone = pytz.timezone('Asia/Kolkata')
 current_time = datetime.now(ist_timezone).strftime('%A, %d %b %Y | %I:%M %p IST')
 st.caption(f"**Last Market Sync:** {current_time}")
@@ -149,6 +160,32 @@ if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
         else:
             st.success(f"🔥 **ALLOCATE TO:** {best_fund}")
             st.write(f"Estimated Total NAV Drop: **{best_impact:.2f}%**")
+            
+        # --- NEW: FUND COMPARISON DASHBOARD ---
+        st.write("---")
+        st.subheader("📊 Cross-Fund Comparison")
+        st.caption("Side-by-side view of all tracked NAV impacts.")
+        
+        # Create a dynamic number of columns based on how many funds are tracked
+        comp_cols = st.columns(len(funds))
+        
+        for i, (fund_name, impact) in enumerate(fund_impacts.items()):
+            # Determine color class
+            val_class = "fund-val-red" if impact < 0 else "fund-val-green"
+            # Add an explicit plus sign for positive numbers
+            sign = "+" if impact > 0 else ""
+            
+            # Inject HTML for custom styled cards
+            comp_cols[i].markdown(
+                f"""
+                <div class="fund-card">
+                    <div class="fund-title">{fund_name}</div>
+                    <div class="{val_class}">{sign}{impact:.2f}%</div>
+                </div>
+                """, 
+                unsafe_allow_html=True
+            )
+            
         st.divider()
         
         # 3. DIAGNOSTICS & HEATMAP VISUALIZATION
