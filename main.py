@@ -31,15 +31,7 @@ st.markdown(
     .stButton>button { background-color: #2563eb; color: #ffffff; border-radius: 4px; font-weight: 600; border: 1px solid #1d4ed8; padding: 0.5rem 1.5rem; transition: all 0.2s ease; text-transform: uppercase; letter-spacing: 0.5px; }
     .stButton>button:hover { background-color: #1d4ed8; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4); }
     .stTextInput>div>div>input { background-color: rgba(30, 41, 59, 0.8); color: #f8fafc; border: 1px solid #475569; border-radius: 4px; }
-    
-    .fund-card {
-        background-color: #1e293b;
-        border: 1px solid #334155;
-        border-radius: 8px;
-        padding: 20px;
-        text-align: center;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
-    }
+    .fund-card { background-color: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 20px; text-align: center; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3); }
     .fund-title { font-size: 1.2rem; color: #94a3b8; margin-bottom: 10px; font-weight: 600; }
     .fund-val-red { font-size: 2rem; color: #f23645; font-weight: 700; }
     .fund-val-green { font-size: 2rem; color: #089981; font-weight: 700; }
@@ -48,7 +40,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# --- EXPANDED MUTUAL FUND PORTFOLIO DATA (Normalized to ~100%) ---
+# --- MUTUAL FUND PORTFOLIO DATA ---
 funds = {
     "HDFC Flexi Cap": {
         "ICICIBANK.NS": 0.095, "HDFCBANK.NS": 0.075, "AXISBANK.NS": 0.065, "SBIN.NS": 0.055, 
@@ -84,7 +76,14 @@ funds = {
     }
 }
 
-# --- FETCH LIVE DATA FUNCTIONS ---
+# --- MUTUAL FUND YAHOO FINANCE TICKERS ---
+mf_tickers = {
+    "HDFC Flexi Cap": "0P00005WZY.BO",
+    "Parag Parikh Flexi Cap": "0P0000YWL1.BO",
+    "Helios Flexi Cap": "0P0001OVB2.BO"
+}
+
+# --- DATA FETCHING FUNCTIONS ---
 @st.cache_data(ttl=60)
 def fetch_index_data():
     indices = {"NIFTY 50": "^NSEI", "SENSEX": "^BSESN"}
@@ -108,7 +107,6 @@ def fetch_live_data(tickers):
     try:
         data = yf.download(valid_tickers, period="2d", progress=False)
         close_data = data['Close'] if len(valid_tickers) > 1 else data['Close'].to_frame(name=valid_tickers[0])
-        
         for ticker in valid_tickers:
             try:
                 hist = close_data[ticker].dropna()
@@ -121,9 +119,24 @@ def fetch_live_data(tickers):
                 changes[ticker] = 0.0
     except:
         for ticker in valid_tickers: changes[ticker] = 0.0
-        
     changes["CASH"] = 0.0
     return changes
+
+@st.cache_data(ttl=3600) # Cache historical data for an hour
+def fetch_historical_mf_data(period):
+    hist_data = pd.DataFrame()
+    for name, ticker in mf_tickers.items():
+        try:
+            fund = yf.Ticker(ticker)
+            df = fund.history(period=period)
+            if not df.empty:
+                # Normalize data so all funds start at 100 on the chart for direct % comparison
+                df['Normalized'] = (df['Close'] / df['Close'].iloc[0]) * 100
+                df['Fund'] = name
+                hist_data = pd.concat([hist_data, df[['Normalized', 'Fund']]])
+        except:
+            pass
+    return hist_data
 
 # --- MAIN UI ---
 st.title("📉 Institutional Dip Analyzer Pro")
@@ -131,14 +144,15 @@ st.title("📉 Institutional Dip Analyzer Pro")
 ist_timezone = pytz.timezone('Asia/Kolkata')
 current_time = datetime.now(ist_timezone).strftime('%A, %d %b %Y | %I:%M %p IST')
 st.caption(f"**Last Market Sync:** {current_time}")
-st.markdown("Full-Weight Portfolio Execution & Market Heatmap Engine")
 
-# 1. MARKET PULSE
+# --- SECTION 1: LIVE INTRADAY ANALYZER ---
+st.header("1. Intraday Deployment Engine")
+st.markdown("Scan live underlying assets to find the deepest intraday NAV discount for lumpsum deployment.")
+
 idx_data = fetch_index_data()
 col1, col2, _ = st.columns([1, 1, 2])
 col1.metric("NIFTY 50", f"{idx_data['NIFTY 50']['value']:,.2f}", f"{idx_data['NIFTY 50']['change']:.2f}%")
 col2.metric("SENSEX", f"{idx_data['SENSEX']['value']:,.2f}", f"{idx_data['SENSEX']['change']:.2f}%")
-st.divider()
 
 if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
     with st.spinner("Downloading live data and executing NAV drop algorithms..."):
@@ -152,7 +166,6 @@ if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
         best_fund = min(fund_impacts, key=fund_impacts.get)
         best_impact = fund_impacts[best_fund]
         
-        # 2. DEPLOYMENT TARGET
         st.subheader("🎯 System Recommendation")
         if best_impact >= 0:
             st.info("⚖️ **HOLD CASH.** Based on total portfolio weighting, no significant dip detected.")
@@ -160,30 +173,18 @@ if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
             st.success(f"🔥 **ALLOCATE TO:** {best_fund}")
             st.write(f"Estimated Total NAV Drop: **{best_impact:.2f}%**")
             
-        # --- FUND COMPARISON DASHBOARD ---
         st.write("---")
         st.subheader("📊 Cross-Fund Comparison")
-        st.caption("Side-by-side view of all tracked NAV impacts.")
-        
         comp_cols = st.columns(len(funds))
-        
         for i, (fund_name, impact) in enumerate(fund_impacts.items()):
             val_class = "fund-val-red" if impact < 0 else "fund-val-green"
             sign = "+" if impact > 0 else ""
-            
             comp_cols[i].markdown(
-                f"""
-                <div class="fund-card">
-                    <div class="fund-title">{fund_name}</div>
-                    <div class="{val_class}">{sign}{impact:.2f}%</div>
-                </div>
-                """, 
+                f"<div class='fund-card'><div class='fund-title'>{fund_name}</div><div class='{val_class}'>{sign}{impact:.2f}%</div></div>", 
                 unsafe_allow_html=True
             )
             
         st.divider()
-        
-        # 3. DIAGNOSTICS & HEATMAP VISUALIZATION
         st.subheader("Deep Diagnostics (Heatmap & Holdings)")
         search_query = st.text_input("🔍 Filter Table by Stock (e.g., 'HDFC')").upper()
         
@@ -198,54 +199,59 @@ if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
                 for ticker, weight in holdings.items():
                     stock_name = ticker.replace(".NS", "")
                     change = live_changes.get(ticker, 0.0)
-                    df_data.append({
-                        "Asset": stock_name,
-                        "Allocation": weight * 100,
-                        "Intraday Move": change,
-                        "Net Drag/Lift": change * weight 
-                    })
+                    df_data.append({"Asset": stock_name, "Allocation": weight * 100, "Intraday Move": change, "Net Drag/Lift": change * weight})
                 
                 df_full = pd.DataFrame(df_data).sort_values(by="Allocation", ascending=False)
-                
-                # We need this purely for the Treemap hierarchy, but we won't show it in the table
                 df_full['Portfolio'] = fund_name
                 
                 chart_col, table_col = st.columns([1.5, 1]) 
-                
                 with table_col:
                     st.markdown("**Complete Asset Ledger**")
-                    if search_query:
-                        df_display = df_full[df_full["Asset"].str.upper().str.contains(search_query)]
-                    else:
-                        df_display = df_full
-                    
-                    # --- NEW: Drop the redundant 'Portfolio' column before rendering the table ---
-                    df_display_clean = df_display.drop(columns=['Portfolio'])
-                    
-                    styled_df = df_display_clean.style.map(color_returns, subset=["Intraday Move", "Net Drag/Lift"]).format({
-                        "Allocation": "{:.2f}%", "Intraday Move": "{:.2f}%", "Net Drag/Lift": "{:.3f}%"
-                    })
+                    df_display = df_full[df_full["Asset"].str.upper().str.contains(search_query)] if search_query else df_full
+                    styled_df = df_display.drop(columns=['Portfolio']).style.map(color_returns, subset=["Intraday Move", "Net Drag/Lift"]).format({"Allocation": "{:.2f}%", "Intraday Move": "{:.2f}%", "Net Drag/Lift": "{:.3f}%"})
                     st.dataframe(styled_df, use_container_width=True, hide_index=True, height=500)
                 
                 with chart_col:
                     st.markdown("**Performance Heatmap**")
-                    fig = px.treemap(
-                        df_full, 
-                        path=['Portfolio', 'Asset'], 
-                        values='Allocation',
-                        color='Intraday Move',
-                        color_continuous_scale=['#f23645', '#1a2235', '#089981'],
-                        color_continuous_midpoint=0
-                    )
-                    fig.update_layout(
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        plot_bgcolor='rgba(0,0,0,0)',
-                        font=dict(color='#e2e8f0'),
-                        margin=dict(t=10, b=10, l=10, r=10),
-                        coloraxis_colorbar=dict(title="% Change", tickformat=".1f")
-                    )
-                    fig.update_traces(
-                        textinfo="label+value",
-                        hovertemplate="<b>%{label}</b><br>Weight: %{value:.2f}%<br>Daily Change: %{color:.2f}%<extra></extra>"
-                    )
+                    fig = px.treemap(df_full, path=['Portfolio', 'Asset'], values='Allocation', color='Intraday Move', color_continuous_scale=['#f23645', '#1a2235', '#089981'], color_continuous_midpoint=0)
+                    fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='#e2e8f0'), margin=dict(t=10, b=10, l=10, r=10), coloraxis_colorbar=dict(title="% Change", tickformat=".1f"))
+                    fig.update_traces(textinfo="label+value", hovertemplate="<b>%{label}</b><br>Weight: %{value:.2f}%<br>Daily Change: %{color:.2f}%<extra></extra>")
                     st.plotly_chart(fig, use_container_width=True)
+
+st.divider()
+
+# --- NEW SECTION: MACRO HISTORICAL TRACKER ---
+st.header("2. Historical NAV Performance Tracker")
+st.markdown("Track the actual, long-term compounded growth of your funds.")
+
+# Timeframe Selector
+period = st.radio("Select Timeframe:", ["1mo", "3mo", "1y", "5y"], horizontal=True, format_func=lambda x: {"1mo":"1 Month", "3mo":"3 Months", "1y":"1 Year", "5y":"5 Years"}[x])
+
+with st.spinner("Fetching historical mutual fund NAVs..."):
+    hist_df = fetch_historical_mf_data(period)
+    
+    if not hist_df.empty:
+        # Create beautiful interactive line chart
+        line_fig = px.line(
+            hist_df, 
+            y='Normalized', 
+            color='Fund',
+            color_discrete_sequence=['#38bdf8', '#fbbf24', '#a78bfa'] # Premium distinct colors
+        )
+        
+        line_fig.update_layout(
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='#e2e8f0'),
+            xaxis=dict(title="", showgrid=False),
+            yaxis=dict(title="Normalized Return (%)", showgrid=True, gridcolor='#334155'),
+            legend=dict(title="", orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            hovermode="x unified"
+        )
+        
+        line_fig.update_traces(line=dict(width=3))
+        
+        st.plotly_chart(line_fig, use_container_width=True)
+        st.caption("Chart data is normalized to 100 at the start of the period to allow direct percentage comparison between funds with different NAV prices.")
+    else:
+        st.warning("Could not fetch historical data at this time. Yahoo Finance might be rate-limiting Mutual Fund requests.")
