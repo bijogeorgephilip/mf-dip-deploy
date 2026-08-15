@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime
 import pytz
+import requests
 
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="MF Dip Analyzer Pro", page_icon="📉", layout="wide")
@@ -40,7 +41,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# --- MUTUAL FUND PORTFOLIO DATA ---
+# --- MUTUAL FUND PORTFOLIO DATA (LIVE INTRADAY PREDICTOR WEIGHTS) ---
 funds = {
     "HDFC Flexi Cap": {
         "ICICIBANK.NS": 0.095, "HDFCBANK.NS": 0.075, "AXISBANK.NS": 0.065, "SBIN.NS": 0.055, 
@@ -76,11 +77,11 @@ funds = {
     }
 }
 
-# --- MUTUAL FUND YAHOO FINANCE TICKERS ---
-mf_tickers = {
-    "HDFC Flexi Cap": "0P00005WZY.BO",
-    "Parag Parikh Flexi Cap": "0P0000YWL1.BO",
-    "Helios Flexi Cap": "0P0001OVB2.BO"
+# --- OFFICIAL AMFI SCHEME CODES (Direct Growth Plans) ---
+mf_amfi_codes = {
+    "HDFC Flexi Cap": "119063",
+    "Parag Parikh Flexi Cap": "122639",
+    "Helios Flexi Cap": "152263"
 }
 
 # --- DATA FETCHING FUNCTIONS ---
@@ -122,20 +123,36 @@ def fetch_live_data(tickers):
     changes["CASH"] = 0.0
     return changes
 
-@st.cache_data(ttl=3600) # Cache historical data for an hour
+@st.cache_data(ttl=3600)
 def fetch_historical_mf_data(period):
+    """Fetches OFFICIAL historical NAV data directly from AMFI via mfapi.in"""
     hist_data = pd.DataFrame()
-    for name, ticker in mf_tickers.items():
+    days_to_fetch = {"1mo": 30, "3mo": 90, "1y": 365, "5y": 1825}.get(period, 30)
+    
+    for name, code in mf_amfi_codes.items():
         try:
-            fund = yf.Ticker(ticker)
-            df = fund.history(period=period)
-            if not df.empty:
-                # Normalize data so all funds start at 100 on the chart for direct % comparison
-                df['Normalized'] = (df['Close'] / df['Close'].iloc[0]) * 100
-                df['Fund'] = name
-                hist_data = pd.concat([hist_data, df[['Normalized', 'Fund']]])
-        except:
-            pass
+            url = f"https://api.mfapi.in/mf/{code}"
+            response = requests.get(url).json()
+            
+            if response.get("status") == "SUCCESS":
+                data = response.get("data", [])
+                df = pd.DataFrame(data)
+                
+                df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
+                df['nav'] = pd.to_numeric(df['nav'])
+                df = df.sort_values('date')
+                
+                cutoff_date = datetime.now() - pd.Timedelta(days=days_to_fetch)
+                df = df[df['date'] >= cutoff_date]
+                
+                if not df.empty:
+                    df['Normalized'] = (df['nav'] / df['nav'].iloc[0]) * 100
+                    df['Fund'] = name
+                    df = df.rename(columns={"date": "Date"})
+                    hist_data = pd.concat([hist_data, df[['Date', 'Normalized', 'Fund']]])
+        except Exception as e:
+            pass # Fails gracefully if AMFI is down
+            
     return hist_data
 
 # --- MAIN UI ---
@@ -220,23 +237,22 @@ if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
 
 st.divider()
 
-# --- NEW SECTION: MACRO HISTORICAL TRACKER ---
+# --- SECTION 2: MACRO HISTORICAL TRACKER ---
 st.header("2. Historical NAV Performance Tracker")
-st.markdown("Track the actual, long-term compounded growth of your funds.")
+st.markdown("Track the actual, long-term compounded growth of your funds using official AMFI data.")
 
-# Timeframe Selector
 period = st.radio("Select Timeframe:", ["1mo", "3mo", "1y", "5y"], horizontal=True, format_func=lambda x: {"1mo":"1 Month", "3mo":"3 Months", "1y":"1 Year", "5y":"5 Years"}[x])
 
-with st.spinner("Fetching historical mutual fund NAVs..."):
+with st.spinner("Fetching official AMFI mutual fund NAVs..."):
     hist_df = fetch_historical_mf_data(period)
     
     if not hist_df.empty:
-        # Create beautiful interactive line chart
         line_fig = px.line(
             hist_df, 
+            x='Date', # Set X-Axis to Date from AMFI
             y='Normalized', 
             color='Fund',
-            color_discrete_sequence=['#38bdf8', '#fbbf24', '#a78bfa'] # Premium distinct colors
+            color_discrete_sequence=['#38bdf8', '#fbbf24', '#a78bfa']
         )
         
         line_fig.update_layout(
@@ -254,4 +270,4 @@ with st.spinner("Fetching historical mutual fund NAVs..."):
         st.plotly_chart(line_fig, use_container_width=True)
         st.caption("Chart data is normalized to 100 at the start of the period to allow direct percentage comparison between funds with different NAV prices.")
     else:
-        st.warning("Could not fetch historical data at this time. Yahoo Finance might be rate-limiting Mutual Fund requests.")
+        st.warning("Could not fetch historical data at this time. AMFI servers might be busy.")
