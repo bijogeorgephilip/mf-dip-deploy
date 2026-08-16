@@ -155,6 +155,40 @@ def fetch_historical_mf_data(period):
             
     return hist_data
 
+@st.cache_data(ttl=3600)
+def fetch_amfi_eod_data():
+    """Fetches official EOD NAV, previous EOD NAV, and calculates EOD change from AMFI via mfapi.in"""
+    eod_data = {}
+    for name, code in mf_amfi_codes.items():
+        try:
+            url = f"https://api.mfapi.in/mf/{code}"
+            response = requests.get(url).json()
+            
+            if response.get("status") == "SUCCESS":
+                data = response.get("data", [])
+                if len(data) >= 2:
+                    df = pd.DataFrame(data)
+                    df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
+                    df['nav'] = pd.to_numeric(df['nav'])
+                    df = df.sort_values('date') # Sort oldest first
+                    
+                    latest_row = df.iloc[-1]
+                    prev_row = df.iloc[-2]
+                    
+                    latest_nav = latest_row['nav']
+                    prev_nav = prev_row['nav']
+                    latest_date = latest_row['date'].strftime('%d-%b-%Y')
+                    
+                    change = ((latest_nav - prev_nav) / prev_nav) * 100
+                    eod_data[name] = {
+                        "nav": latest_nav,
+                        "change": change,
+                        "date": latest_date
+                    }
+        except Exception as e:
+            pass # Fails gracefully if AMFI is down
+    return eod_data
+
 # --- MAIN UI ---
 st.title("📉 Institutional Dip Analyzer Pro")
 
@@ -240,6 +274,31 @@ st.divider()
 # --- SECTION 2: MACRO HISTORICAL TRACKER ---
 st.header("2. Historical NAV Performance Tracker")
 st.markdown("Track the actual, long-term compounded growth of your funds using official AMFI data.")
+
+# --- OFFICIAL AMFI EOD SNAPSHOT ---
+st.subheader("📊 Official End-Of-Day NAV & Daily Change")
+with st.spinner("Fetching official AMFI EOD NAVs..."):
+    amfi_eod = fetch_amfi_eod_data()
+    if amfi_eod:
+        comp_cols = st.columns(len(funds))
+        for i, (fund_name, info) in enumerate(amfi_eod.items()):
+            val_class = "fund-val-red" if info['change'] < 0 else "fund-val-green"
+            sign = "+" if info['change'] > 0 else ""
+            comp_cols[i].markdown(
+                f"""
+                <div class='fund-card'>
+                    <div class='fund-title'>{fund_name}</div>
+                    <div style='font-size: 1.15rem; color: #e2e8f0; margin-bottom: 8px;'>EOD NAV: <b>₹{info['nav']:.4f}</b></div>
+                    <div class='{val_class}'>{sign}{info['change']:.2f}%</div>
+                    <div style='font-size: 0.8rem; color: #64748b; margin-top: 8px;'>As of: {info['date']}</div>
+                </div>
+                """, 
+                unsafe_allow_html=True
+            )
+    else:
+        st.warning("Could not fetch official EOD data from AMFI.")
+
+st.write("---")
 
 period = st.radio("Select Timeframe:", ["1mo", "3mo", "1y", "5y"], horizontal=True, format_func=lambda x: {"1mo":"1 Month", "3mo":"3 Months", "1y":"1 Year", "5y":"5 Years"}[x])
 
