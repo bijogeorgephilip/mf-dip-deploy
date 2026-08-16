@@ -5,6 +5,7 @@ import plotly.express as px
 from datetime import datetime
 import pytz
 import requests
+import time
 
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="MF Dip Analyzer Pro", page_icon="📉", layout="wide")
@@ -50,27 +51,27 @@ funds = {
         "ITC.NS": 0.022, "BAJFINANCE.NS": 0.020, "NTPC.NS": 0.018, "SUNPHARMA.NS": 0.015, 
         "M&M.NS": 0.015, "TITAN.NS": 0.015, "ASIANPAINT.NS": 0.015, "TATASTEEL.NS": 0.015,
         "ULTRACEMCO.NS": 0.014, "POWERGRID.NS": 0.014, "BAJAJ-AUTO.NS": 0.014, 
-        "TATAMOTORS.NS": 0.014, "WIPRO.NS": 0.014, "TECHM.NS": 0.013, "JSWSTEEL.NS": 0.013, 
+        "WIPRO.NS": 0.014, "TECHM.NS": 0.013, "JSWSTEEL.NS": 0.013, 
         "HINDALCO.NS": 0.013, "COALINDIA.NS": 0.013, "ONGC.NS": 0.012, "GRASIM.NS": 0.012,
         "ADANIPORTS.NS": 0.012, "DIVISLAB.NS": 0.012, "MARUTI.NS": 0.012, "NESTLEIND.NS": 0.012,
         "TATACONSUM.NS": 0.012, "INDUSINDBK.NS": 0.011, "DRREDDY.NS": 0.011, "HINDUNILVR.NS": 0.011,
         "SBILIFE.NS": 0.011, "HDFCLIFE.NS": 0.011, "BAJAJFINSV.NS": 0.010, "BPCL.NS": 0.010
     },
     "Parag Parikh Flexi Cap": {
-        "HDFCBANK.NS": 0.090, "ITC.NS": 0.080, "POWERGRID.NS": 0.065, "ICICIBANK.NS": 0.060, 
-        "BAJFINANCE.NS": 0.055, "MARUTI.NS": 0.050, "HCLTECH.NS": 0.045, "COALINDIA.NS": 0.040, 
+        "HDFCBANK.NS": 0.090, "ITC.NS": 0.080, "POWERGRID.NS": 0.065, "ICICIBANK.NS": 0.060,
+        "BAJFINANCE.NS": 0.055, "MARUTI.NS": 0.050, "HCLTECH.NS": 0.045, "COALINDIA.NS": 0.040,
         "CDSL.NS": 0.035, "RELIANCE.NS": 0.030, "GOOGL": 0.060, "MSFT": 0.050, "AMZN": 0.045, "META": 0.040,
-        "BAJAJ-AUTO.NS": 0.030, "HEROMOTOCO.NS": 0.025, "NESTLEIND.NS": 0.020, "BRITANNIA.NS": 0.020, 
+        "BAJAJ-AUTO.NS": 0.030, "HEROMOTOCO.NS": 0.025, "NESTLEIND.NS": 0.020, "BRITANNIA.NS": 0.020,
         "TATACONSUM.NS": 0.020, "EICHERMOT.NS": 0.015, "TVSMOTOR.NS": 0.015, "COLPAL.NS": 0.015,
         "HINDUNILVR.NS": 0.015, "DABUR.NS": 0.015, "PIDILITIND.NS": 0.015, "MARICO.NS": 0.015,
-        "GODREJCP.NS": 0.015, "UBL.NS": 0.010, "MCDOWELL-N.NS": 0.010
+        "GODREJCP.NS": 0.015, "UBL.NS": 0.010
     },
     "Helios Flexi Cap": {
-        "ICICIBANK.NS": 0.080, "HDFCBANK.NS": 0.070, "SBIN.NS": 0.060, "RELIANCE.NS": 0.055, 
-        "LT.NS": 0.050, "ITC.NS": 0.045, "INFY.NS": 0.040, "TCS.NS": 0.035, "AXISBANK.NS": 0.030, 
-        "ZOMATO.NS": 0.030, "PAYTM.NS": 0.025, "TRENT.NS": 0.025, "INDIGO.NS": 0.025, "DIXON.NS": 0.025,
-        "HAL.NS": 0.025, "BEL.NS": 0.025, "SWIGGY.NS": 0.020, "ZYDUSLIFE.NS": 0.020, 
-        "APOLLOHOSP.NS": 0.020, "MAXHEALTH.NS": 0.020, "POLYCAB.NS": 0.020, "KPITTECH.NS": 0.020, 
+        "ICICIBANK.NS": 0.080, "HDFCBANK.NS": 0.070, "SBIN.NS": 0.060, "RELIANCE.NS": 0.055,
+        "LT.NS": 0.050, "ITC.NS": 0.045, "INFY.NS": 0.040, "TCS.NS": 0.035, "AXISBANK.NS": 0.030,
+        "PAYTM.NS": 0.025, "TRENT.NS": 0.025, "INDIGO.NS": 0.025, "DIXON.NS": 0.025,
+        "HAL.NS": 0.025, "BEL.NS": 0.025, "SWIGGY.NS": 0.020, "ZYDUSLIFE.NS": 0.020,
+        "APOLLOHOSP.NS": 0.020, "MAXHEALTH.NS": 0.020, "POLYCAB.NS": 0.020, "KPITTECH.NS": 0.020,
         "TATAELXSI.NS": 0.020, "CYIENT.NS": 0.015, "PERSISTENT.NS": 0.015, "COFORGE.NS": 0.015,
         "TATACHEM.NS": 0.015, "SONACOMS.NS": 0.015, "CGPOWER.NS": 0.015, "KALYANKJIL.NS": 0.015,
         "DEVYANI.NS": 0.010, "SUZLON.NS": 0.010, "BSE.NS": 0.010, "MCX.NS": 0.010, "POLICYBZR.NS": 0.010
@@ -103,11 +104,14 @@ def fetch_index_data():
 
 @st.cache_data(ttl=60)
 def fetch_live_data(tickers):
+    invalid_tickers = {"ZOMATO.NS", "MCDOWELL-N.NS", "TATAMOTORS.NS"}
     changes = {}
-    valid_tickers = [t for t in tickers if t != "CASH"]
+    valid_tickers = [t for t in tickers if t != "CASH" and t not in invalid_tickers]
+
     try:
         data = yf.download(valid_tickers, period="2d", progress=False)
-        close_data = data['Close'] if len(valid_tickers) > 1 else data['Close'].to_frame(name=valid_tickers[0])
+        close_data = data["Close"] if len(valid_tickers) > 1 else data["Close"].to_frame(name=valid_tickers[0])
+
         for ticker in valid_tickers:
             try:
                 hist = close_data[ticker].dropna()
@@ -116,10 +120,12 @@ def fetch_live_data(tickers):
                     changes[ticker] = ((curr - prev) / prev) * 100
                 else:
                     changes[ticker] = 0.0
-            except:
+            except Exception:
                 changes[ticker] = 0.0
-    except:
-        for ticker in valid_tickers: changes[ticker] = 0.0
+    except Exception:
+        for ticker in valid_tickers:
+            changes[ticker] = 0.0
+
     changes["CASH"] = 0.0
     return changes
 
