@@ -125,68 +125,91 @@ def fetch_live_data(tickers):
 
 @st.cache_data(ttl=3600)
 def fetch_historical_mf_data(period):
-    """Fetches OFFICIAL historical NAV data directly from AMFI via mfapi.in"""
     hist_data = pd.DataFrame()
     days_to_fetch = {"1mo": 30, "3mo": 90, "1y": 365, "5y": 1825}.get(period, 30)
-    
+
     for name, code in mf_amfi_codes.items():
         try:
-            url = f"https://api.mfapi.in/mf/{code}"
-            response = requests.get(url).json()
-            
-            if response.get("status") == "SUCCESS":
-                data = response.get("data", [])
-                df = pd.DataFrame(data)
-                
-                df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
-                df['nav'] = pd.to_numeric(df['nav'])
-                df = df.sort_values('date')
-                
-                cutoff_date = datetime.now() - pd.Timedelta(days=days_to_fetch)
-                df = df[df['date'] >= cutoff_date]
-                
-                if not df.empty:
-                    df['Normalized'] = (df['nav'] / df['nav'].iloc[0]) * 100
-                    df['Fund'] = name
-                    df = df.rename(columns={"date": "Date"})
-                    hist_data = pd.concat([hist_data, df[['Date', 'Normalized', 'Fund']]])
-        except Exception as e:
-            pass # Fails gracefully if AMFI is down
-            
+            response = requests.get(f"https://api.mfapi.in/mf/{code}", timeout=20)
+            response.raise_for_status()
+            payload = response.json()
+
+            data = payload.get("data", []) if isinstance(payload, dict) else []
+            if not isinstance(data, list) or not data:
+                continue
+
+            df = pd.DataFrame(data)
+            if "date" not in df.columns or "nav" not in df.columns:
+                continue
+
+            df["date"] = pd.to_datetime(df["date"], format="%d-%m-%Y", dayfirst=True, errors="coerce")
+            df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+            df = df.dropna(subset=["date", "nav"]).sort_values("date")
+
+            cutoff_date = datetime.now() - pd.Timedelta(days=days_to_fetch)
+            df = df[df["date"] >= cutoff_date]
+
+            if df.empty:
+                continue
+
+            df["Normalized"] = (df["nav"] / df["nav"].iloc[0]) * 100
+            df["Fund"] = name
+            df = df.rename(columns={"date": "Date"})
+            hist_data = pd.concat([hist_data, df[["Date", "Normalized", "Fund"]]])
+
+        except Exception:
+            pass
+
     return hist_data
 
 @st.cache_data(ttl=3600)
 def fetch_amfi_eod_data():
-    """Fetches official EOD NAV, previous EOD NAV, and calculates EOD change from AMFI via mfapi.in"""
+    """Fetch official EOD NAV, previous EOD NAV, and daily change from AMFI."""
     eod_data = {}
+
     for name, code in mf_amfi_codes.items():
         try:
             url = f"https://api.mfapi.in/mf/{code}"
-            response = requests.get(url).json()
-            
-            if response.get("status") == "SUCCESS":
-                data = response.get("data", [])
-                if len(data) >= 2:
-                    df = pd.DataFrame(data)
-                    df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
-                    df['nav'] = pd.to_numeric(df['nav'])
-                    df = df.sort_values('date') # Sort oldest first
-                    
-                    latest_row = df.iloc[-1]
-                    prev_row = df.iloc[-2]
-                    
-                    latest_nav = latest_row['nav']
-                    prev_nav = prev_row['nav']
-                    latest_date = latest_row['date'].strftime('%d-%b-%Y')
-                    
-                    change = ((latest_nav - prev_nav) / prev_nav) * 100
-                    eod_data[name] = {
-                        "nav": latest_nav,
-                        "change": change,
-                        "date": latest_date
-                    }
-        except Exception as e:
-            pass # Fails gracefully if AMFI is down
+            response = requests.get(url, timeout=20)
+            response.raise_for_status()
+
+            payload = response.json()
+            if not isinstance(payload, dict):
+                continue
+
+            data = payload.get("data", [])
+            if not isinstance(data, list) or not data:
+                continue
+
+            df = pd.DataFrame(data)
+            if df.empty or "date" not in df.columns or "nav" not in df.columns:
+                continue
+
+            df["date"] = pd.to_datetime(df["date"], format="%d-%m-%Y", dayfirst=True, errors="coerce")
+            df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+            df = df.dropna(subset=["date", "nav"]).sort_values("date")
+
+            if len(df) < 2:
+                continue
+
+            latest_row = df.iloc[-1]
+            prev_row = df.iloc[-2]
+
+            latest_nav = float(latest_row["nav"])
+            prev_nav = float(prev_row["nav"])
+
+            change = ((latest_nav - prev_nav) / prev_nav) * 100 if prev_nav else 0.0
+            latest_date = latest_row["date"].strftime("%d-%b-%Y")
+
+            eod_data[name] = {
+                "nav": latest_nav,
+                "change": change,
+                "date": latest_date,
+            }
+
+        except Exception:
+            pass
+
     return eod_data
 
 # --- MAIN UI ---
