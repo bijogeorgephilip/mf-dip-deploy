@@ -85,6 +85,39 @@ mf_amfi_codes = {
     "Helios Flexi Cap Fund Direct Growth": "152135"
 }
 
+INVALID_YF_TICKERS = {
+    "ZOMATO.NS",
+    "MCDOWELL-N.NS",
+    "TATAMOTORS.NS",
+    "PAYTM.NS",
+    "SWIGGY.NS",
+    "MCX.NS",
+    "POLICYBZR.NS",
+    "KALYANKJIL.NS",
+}
+
+
+def sanitize_portfolio_tickers(portfolio):
+    sanitized = {}
+    for fund_name, holdings in portfolio.items():
+        cleaned = {ticker: weight for ticker, weight in holdings.items() if ticker and ticker not in INVALID_YF_TICKERS}
+        if cleaned:
+            sanitized[fund_name] = cleaned
+    return sanitized
+
+
+def is_valid_yf_ticker(ticker):
+    if not ticker or ticker in INVALID_YF_TICKERS:
+        return False
+    try:
+        info = yf.Ticker(ticker).fast_info
+        return info is not None and getattr(info, "lastPrice", None) is not None
+    except Exception:
+        return False
+
+
+funds = sanitize_portfolio_tickers(funds)
+
 # --- DATA FETCHING FUNCTIONS ---
 @st.cache_data(ttl=60)
 def fetch_index_data():
@@ -104,24 +137,38 @@ def fetch_index_data():
 
 @st.cache_data(ttl=60)
 def fetch_live_data(tickers):
-    invalid_tickers = {"ZOMATO.NS", "MCDOWELL-N.NS", "TATAMOTORS.NS"}
     changes = {}
-    valid_tickers = [t for t in tickers if t != "CASH" and t not in invalid_tickers]
+    valid_tickers = []
+
+    for ticker in tickers:
+        if not ticker or ticker == "CASH":
+            continue
+        if ticker in INVALID_YF_TICKERS:
+            continue
+        if is_valid_yf_ticker(ticker):
+            valid_tickers.append(ticker)
+
+    if not valid_tickers:
+        changes["CASH"] = 0.0
+        return changes
 
     try:
         data = yf.download(valid_tickers, period="2d", progress=False)
-        close_data = data["Close"] if len(valid_tickers) > 1 else data["Close"].to_frame(name=valid_tickers[0])
-
-        for ticker in valid_tickers:
-            try:
-                hist = close_data[ticker].dropna()
-                if len(hist) >= 2:
-                    prev, curr = hist.iloc[-2], hist.iloc[-1]
-                    changes[ticker] = ((curr - prev) / prev) * 100
-                else:
-                    changes[ticker] = 0.0
-            except Exception:
+        if data.empty:
+            for ticker in valid_tickers:
                 changes[ticker] = 0.0
+        else:
+            close_data = data["Close"] if len(valid_tickers) > 1 else data["Close"].to_frame(name=valid_tickers[0])
+            for ticker in valid_tickers:
+                try:
+                    hist = close_data[ticker].dropna()
+                    if len(hist) >= 2:
+                        prev, curr = hist.iloc[-2], hist.iloc[-1]
+                        changes[ticker] = ((curr - prev) / prev) * 100 if prev else 0.0
+                    else:
+                        changes[ticker] = 0.0
+                except Exception:
+                    changes[ticker] = 0.0
     except Exception:
         for ticker in valid_tickers:
             changes[ticker] = 0.0
