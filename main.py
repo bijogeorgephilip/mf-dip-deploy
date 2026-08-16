@@ -124,43 +124,72 @@ def fetch_live_data(tickers):
     return changes
 
 @st.cache_data(ttl=3600)
+def fetch_amfi_scheme_data(code):
+    """Fetch and normalize a single AMFI fund series into a date/nav DataFrame."""
+    url = f"https://api.mfapi.in/mf/{code}"
+    for attempt in range(3):
+        try:
+            response = requests.get(url, timeout=20)
+            response.raise_for_status()
+            payload = response.json()
+
+            if not isinstance(payload, dict):
+                return pd.DataFrame()
+
+            raw_data = payload.get("data", [])
+            if not isinstance(raw_data, list):
+                return pd.DataFrame()
+
+            df = pd.DataFrame(raw_data)
+            if df.empty or "date" not in df.columns or "nav" not in df.columns:
+                return pd.DataFrame()
+
+            df = df[["date", "nav"]].copy()
+            df["date"] = pd.to_datetime(df["date"], format="%d-%m-%Y", dayfirst=True, errors="coerce")
+            df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+            df = df.dropna(subset=["date", "nav"]).sort_values("date").reset_index(drop=True)
+
+            return df if not df.empty else pd.DataFrame()
+
+        except (requests.RequestException, ValueError, TypeError):
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            return pd.DataFrame()
+
+    return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600)
 def fetch_historical_mf_data(period):
     hist_data = pd.DataFrame()
     days_to_fetch = {"1mo": 30, "3mo": 90, "1y": 365, "5y": 1825}.get(period, 30)
 
     for name, code in mf_amfi_codes.items():
         try:
-            response = requests.get(f"https://api.mfapi.in/mf/{code}", timeout=20)
-            response.raise_for_status()
-            payload = response.json()
-
-            data = payload.get("data", []) if isinstance(payload, dict) else []
-            if not isinstance(data, list) or not data:
-                continue
-
-            df = pd.DataFrame(data)
-            if "date" not in df.columns or "nav" not in df.columns:
-                continue
-
-            df["date"] = pd.to_datetime(df["date"], format="%d-%m-%Y", dayfirst=True, errors="coerce")
-            df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
-            df = df.dropna(subset=["date", "nav"]).sort_values("date")
-
-            cutoff_date = datetime.now() - pd.Timedelta(days=days_to_fetch)
-            df = df[df["date"] >= cutoff_date]
-
+            df = fetch_amfi_scheme_data(code)
             if df.empty:
                 continue
 
+            cutoff_date = get_ist_now() - pd.Timedelta(days=days_to_fetch)
+            df = df[df["date"] >= cutoff_date.tz_localize(None)]  # compare naive datetimes safely
+            if df.empty:
+                continue
+
+            df = df.copy()
             df["Normalized"] = (df["nav"] / df["nav"].iloc[0]) * 100
             df["Fund"] = name
             df = df.rename(columns={"date": "Date"})
-            hist_data = pd.concat([hist_data, df[["Date", "Normalized", "Fund"]]])
+            hist_data = pd.concat(
+                [hist_data, df[["Date", "Normalized", "Fund"]]],
+                ignore_index=True
+            )
 
         except Exception:
-            pass
+            continue
 
     return hist_data
+
 
 @st.cache_data(ttl=3600)
 def fetch_amfi_eod_data():
@@ -169,187 +198,34 @@ def fetch_amfi_eod_data():
 
     for name, code in mf_amfi_codes.items():
         try:
-            url = f"https://api.mfapi.in/mf/{code}"
-            response = requests.get(url, timeout=20)
-            response.raise_for_status()
-
-            payload = response.json()
-            if not isinstance(payload, dict):
-                continue
-
-            data = payload.get("data", [])
-            if not isinstance(data, list) or not data:
-                continue
-
-            df = pd.DataFrame(data)
-            if df.empty or "date" not in df.columns or "nav" not in df.columns:
-                continue
-
-            df["date"] = pd.to_datetime(df["date"], format="%d-%m-%Y", dayfirst=True, errors="coerce")
-            df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
-            df = df.dropna(subset=["date", "nav"]).sort_values("date")
-
-            if len(df) < 2:
+            df = fetch_amfi_scheme_data(code)
+            if df.empty or len(df) < 2:
                 continue
 
             latest_row = df.iloc[-1]
             prev_row = df.iloc[-2]
 
-            latest_nav = float(latest_row["nav"])
-            prev_nav = float(prev_row["nav"])
+            latest_nav = safe_float(latest_row["nav"])
+            prev_nav = safe_float(prev_row["nav"])
 
-            change = ((latest_nav - prev_nav) / prev_nav) * 100 if prev_nav else 0.0
-            latest_date = latest_row["date"].strftime("%d-%b-%Y")
+            change = 0.0 if prev_nav == 0 else ((latest_nav - prev_nav) / prev_nav) * 100
 
             eod_data[name] = {
                 "nav": latest_nav,
                 "change": change,
-                "date": latest_date,
+                "date": latest_row["date"].strftime("%d-%b-%Y"),
             }
 
         except Exception:
-            pass
+            continue
 
     return eod_data
 
-# --- MAIN UI ---
-st.title("📉 Institutional Dip Analyzer Pro")
+def get_ist_now():
+    return datetime.now(pytz.timezone("Asia/Kolkata"))
 
-ist_timezone = pytz.timezone('Asia/Kolkata')
-current_time = datetime.now(ist_timezone).strftime('%A, %d %b %Y | %I:%M %p IST')
-st.caption(f"**Last Market Sync:** {current_time}")
-
-# --- SECTION 1: LIVE INTRADAY ANALYZER ---
-st.header("1. Intraday Deployment Engine")
-st.markdown("Scan live underlying assets to find the deepest intraday NAV discount for lumpsum deployment.")
-
-idx_data = fetch_index_data()
-col1, col2, _ = st.columns([1, 1, 2])
-col1.metric("NIFTY 50", f"{idx_data['NIFTY 50']['value']:,.2f}", f"{idx_data['NIFTY 50']['change']:.2f}%")
-col2.metric("SENSEX", f"{idx_data['SENSEX']['value']:,.2f}", f"{idx_data['SENSEX']['change']:.2f}%")
-
-if st.button("EXECUTE FULL-PORTFOLIO SCAN"):
-    with st.spinner("Downloading live data and executing NAV drop algorithms..."):
-        all_tickers = set(t for fund in funds.values() for t in fund.keys())
-        live_changes = fetch_live_data(all_tickers)
-        
-        fund_impacts = {}
-        for fund_name, holdings in funds.items():
-            fund_impacts[fund_name] = sum([live_changes.get(t, 0) * w for t, w in holdings.items()])
-            
-        best_fund = min(fund_impacts, key=fund_impacts.get)
-        best_impact = fund_impacts[best_fund]
-        
-        st.subheader("🎯 System Recommendation")
-        if best_impact >= 0:
-            st.info("⚖️ **HOLD CASH.** Based on total portfolio weighting, no significant dip detected.")
-        else:
-            st.success(f"🔥 **ALLOCATE TO:** {best_fund}")
-            st.write(f"Estimated Total NAV Drop: **{best_impact:.2f}%**")
-            
-        st.write("---")
-        st.subheader("📊 Cross-Fund Comparison")
-        comp_cols = st.columns(len(funds))
-        for i, (fund_name, impact) in enumerate(fund_impacts.items()):
-            val_class = "fund-val-red" if impact < 0 else "fund-val-green"
-            sign = "+" if impact > 0 else ""
-            comp_cols[i].markdown(
-                f"<div class='fund-card'><div class='fund-title'>{fund_name}</div><div class='{val_class}'>{sign}{impact:.2f}%</div></div>", 
-                unsafe_allow_html=True
-            )
-            
-        st.divider()
-        st.subheader("Deep Diagnostics (Heatmap & Holdings)")
-        search_query = st.text_input("🔍 Filter Table by Stock (e.g., 'HDFC')").upper()
-        
-        tabs = st.tabs(list(funds.keys()))
-        def color_returns(val):
-            color = '#f23645' if val < 0 else '#089981'
-            return f'color: {color}; font-weight: 600;'
-
-        for tab, (fund_name, holdings) in zip(tabs, funds.items()):
-            with tab:
-                df_data = []
-                for ticker, weight in holdings.items():
-                    stock_name = ticker.replace(".NS", "")
-                    change = live_changes.get(ticker, 0.0)
-                    df_data.append({"Asset": stock_name, "Allocation": weight * 100, "Intraday Move": change, "Net Drag/Lift": change * weight})
-                
-                df_full = pd.DataFrame(df_data).sort_values(by="Allocation", ascending=False)
-                df_full['Portfolio'] = fund_name
-                
-                chart_col, table_col = st.columns([1.5, 1]) 
-                with table_col:
-                    st.markdown("**Complete Asset Ledger**")
-                    df_display = df_full[df_full["Asset"].str.upper().str.contains(search_query)] if search_query else df_full
-                    styled_df = df_display.drop(columns=['Portfolio']).style.map(color_returns, subset=["Intraday Move", "Net Drag/Lift"]).format({"Allocation": "{:.2f}%", "Intraday Move": "{:.2f}%", "Net Drag/Lift": "{:.3f}%"})
-                    st.dataframe(styled_df, use_container_width=True, hide_index=True, height=500)
-                
-                with chart_col:
-                    st.markdown("**Performance Heatmap**")
-                    fig = px.treemap(df_full, path=['Portfolio', 'Asset'], values='Allocation', color='Intraday Move', color_continuous_scale=['#f23645', '#1a2235', '#089981'], color_continuous_midpoint=0)
-                    fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='#e2e8f0'), margin=dict(t=10, b=10, l=10, r=10), coloraxis_colorbar=dict(title="% Change", tickformat=".1f"))
-                    fig.update_traces(textinfo="label+value", hovertemplate="<b>%{label}</b><br>Weight: %{value:.2f}%<br>Daily Change: %{color:.2f}%<extra></extra>")
-                    st.plotly_chart(fig, use_container_width=True)
-
-st.divider()
-
-# --- SECTION 2: MACRO HISTORICAL TRACKER ---
-st.header("2. Historical NAV Performance Tracker")
-st.markdown("Track the actual, long-term compounded growth of your funds using official AMFI data.")
-
-# --- OFFICIAL AMFI EOD SNAPSHOT ---
-st.subheader("📊 Official End-Of-Day NAV & Daily Change")
-with st.spinner("Fetching official AMFI EOD NAVs..."):
-    amfi_eod = fetch_amfi_eod_data()
-    if amfi_eod:
-        comp_cols = st.columns(len(funds))
-        for i, (fund_name, info) in enumerate(amfi_eod.items()):
-            val_class = "fund-val-red" if info['change'] < 0 else "fund-val-green"
-            sign = "+" if info['change'] > 0 else ""
-            comp_cols[i].markdown(
-                f"""
-                <div class='fund-card'>
-                    <div class='fund-title'>{fund_name}</div>
-                    <div style='font-size: 1.15rem; color: #e2e8f0; margin-bottom: 8px;'>EOD NAV: <b>₹{info['nav']:.4f}</b></div>
-                    <div class='{val_class}'>{sign}{info['change']:.2f}%</div>
-                    <div style='font-size: 0.8rem; color: #64748b; margin-top: 8px;'>As of: {info['date']}</div>
-                </div>
-                """, 
-                unsafe_allow_html=True
-            )
-    else:
-        st.warning("Could not fetch official EOD data from AMFI.")
-
-st.write("---")
-
-period = st.radio("Select Timeframe:", ["1mo", "3mo", "1y", "5y"], horizontal=True, format_func=lambda x: {"1mo":"1 Month", "3mo":"3 Months", "1y":"1 Year", "5y":"5 Years"}[x])
-
-with st.spinner("Fetching official AMFI mutual fund NAVs..."):
-    hist_df = fetch_historical_mf_data(period)
-    
-    if not hist_df.empty:
-        line_fig = px.line(
-            hist_df, 
-            x='Date', # Set X-Axis to Date from AMFI
-            y='Normalized', 
-            color='Fund',
-            color_discrete_sequence=['#38bdf8', '#fbbf24', '#a78bfa']
-        )
-        
-        line_fig.update_layout(
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            font=dict(color='#e2e8f0'),
-            xaxis=dict(title="", showgrid=False),
-            yaxis=dict(title="Normalized Return (%)", showgrid=True, gridcolor='#334155'),
-            legend=dict(title="", orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            hovermode="x unified"
-        )
-        
-        line_fig.update_traces(line=dict(width=3))
-        
-        st.plotly_chart(line_fig, use_container_width=True)
-        st.caption("Chart data is normalized to 100 at the start of the period to allow direct percentage comparison between funds with different NAV prices.")
-    else:
-        st.warning("Could not fetch historical data at this time. AMFI servers might be busy.")
+def safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
