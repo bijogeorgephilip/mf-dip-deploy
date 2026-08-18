@@ -350,7 +350,7 @@ def main():
         else:
             st.metric("SENSEX", f"₹{sensex['value']:,.2f}", f"{sensex['change']:.2f}%")
     with c3:
-        if recommendation is not None:
+        if recommendation is not None and recommendation["Weighted Impact"] is not None:
             st.metric("Deployment Signal", recommendation["Signal"], f"{recommendation['Weighted Impact']:.2f}%")
         else:
             st.metric("Deployment Signal", "Hold Cash", "0.00%")
@@ -373,7 +373,7 @@ def main():
         title="Weighted market impact by fund",
     )
     fig.update_layout(xaxis_title="Fund", yaxis_title="Impact (%)", template="plotly_dark")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     st.subheader("Live fund snapshot")
     display_df = summary[["Fund", "Weighted Impact", "NAV", "NAV Change", "Signal"]].copy()
@@ -384,7 +384,7 @@ def main():
             "NAV Change": "NAV change (%)",
         }
     )
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, width='stretch', hide_index=True)
 
     with st.expander("Portfolio logic"):
         st.markdown(
