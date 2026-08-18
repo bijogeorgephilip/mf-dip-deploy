@@ -80,9 +80,9 @@ funds = {
 
 # --- OFFICIAL AMFI SCHEME CODES (Direct Growth Plans) ---
 mf_amfi_codes = {
-    "HDFC Flexi Cap Fund Direct Growth": "118955",
-    "Parag Parikh Flexi Cap Fund Direct Growth": "122639",
-    "Helios Flexi Cap Fund Direct Growth": "152135",
+    "HDFC Flexi Cap": "118955",
+    "Parag Parikh Flexi Cap": "122639",
+    "Helios Flexi Cap": "152135",
 }
 
 INVALID_YF_TICKERS = {
