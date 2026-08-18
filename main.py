@@ -162,19 +162,21 @@ def fetch_live_data(tickers):
             raise ValueError("Empty Yahoo Finance response")
 
         close_data = data["Close"] if len(valid_tickers) > 1 else data["Close"].to_frame(name=valid_tickers[0])
-        for ticker in valid_tickers:
-            try:
-                hist = close_data[ticker].dropna()
-                if len(hist) >= 2:
-                    prev, curr = hist.iloc[-2], hist.iloc[-1]
-                    changes[ticker] = ((curr - prev) / prev) * 100 if prev else 0.0
-                else:
-                    changes[ticker] = None
-            except Exception:
-                changes[ticker] = None
-    except Exception:
-        for ticker in valid_tickers:
-            changes[ticker] = None
+                for ticker in valid_tickers:
+                    try:
+                        # FIX: Check if the column actually exists in the downloaded data!
+                        if ticker not in close_data.columns:
+                            changes[ticker] = None
+                            continue
+                        
+                        hist = close_data[ticker].dropna()
+                        if len(hist) >= 2:
+                            prev, curr = hist.iloc[-2], hist.iloc[-1]
+                            changes[ticker] = ((curr - prev) / prev) * 100 if prev else 0.0
+                        else:
+                            changes[ticker] = None
+                    except Exception:
+                        changes[ticker] = None
 
     changes["CASH"] = 0.0
     changes["_status"] = "ok" if any(v is not None for v in changes.values()) else "failed"
@@ -330,7 +332,7 @@ def main():
 
     market, summary, recommendation = compute_fund_summary()
 
-    has_market_data = all(item.get("ok", False) for item in market.values()) if market else False
+    has_market_data = any(item.get("ok", False) for item in market.values()) if market else False
     if not has_market_data:
         st.warning("Market data is temporarily unavailable. Yahoo Finance is not responding right now.")
         st.stop()
