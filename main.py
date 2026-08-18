@@ -128,11 +128,17 @@ def fetch_index_data():
             hist = yf.Ticker(ticker).history(period="2d")
             if len(hist) >= 2:
                 prev, curr = hist["Close"].iloc[-2], hist["Close"].iloc[-1]
-                data[name] = {"value": float(curr), "change": ((curr - prev) / prev) * 100}
-            else:
-                data[name] = {"value": 0.0, "change": 0.0}
+                if prev and curr:
+                    data[name] = {
+                        "value": float(curr),
+                        "change": ((curr - prev) / prev) * 100,
+                        "ok": True,
+                    }
+                    continue
         except Exception:
-            data[name] = {"value": 0.0, "change": 0.0}
+            pass
+
+        data[name] = {"value": None, "change": None, "ok": False}
     return data
 
 
@@ -142,39 +148,36 @@ def fetch_live_data(tickers):
     valid_tickers = []
 
     for ticker in tickers:
-        if not ticker or ticker == "CASH":
-            continue
-        if ticker in INVALID_YF_TICKERS:
+        if not ticker or ticker == "CASH" or ticker in INVALID_YF_TICKERS:
             continue
         if is_valid_yf_ticker(ticker):
             valid_tickers.append(ticker)
 
     if not valid_tickers:
-        changes["CASH"] = 0.0
-        return changes
+        return {"CASH": 0.0, "_status": "no_valid_tickers"}
 
     try:
-        data = yf.download(valid_tickers, period="2d", progress=False)
+        data = yf.download(valid_tickers, period="2d", progress=False, auto_adjust=True)
         if data.empty:
-            for ticker in valid_tickers:
-                changes[ticker] = 0.0
-        else:
-            close_data = data["Close"] if len(valid_tickers) > 1 else data["Close"].to_frame(name=valid_tickers[0])
-            for ticker in valid_tickers:
-                try:
-                    hist = close_data[ticker].dropna()
-                    if len(hist) >= 2:
-                        prev, curr = hist.iloc[-2], hist.iloc[-1]
-                        changes[ticker] = ((curr - prev) / prev) * 100 if prev else 0.0
-                    else:
-                        changes[ticker] = 0.0
-                except Exception:
-                    changes[ticker] = 0.0
+            raise ValueError("Empty Yahoo Finance response")
+
+        close_data = data["Close"] if len(valid_tickers) > 1 else data["Close"].to_frame(name=valid_tickers[0])
+        for ticker in valid_tickers:
+            try:
+                hist = close_data[ticker].dropna()
+                if len(hist) >= 2:
+                    prev, curr = hist.iloc[-2], hist.iloc[-1]
+                    changes[ticker] = ((curr - prev) / prev) * 100 if prev else 0.0
+                else:
+                    changes[ticker] = None
+            except Exception:
+                changes[ticker] = None
     except Exception:
         for ticker in valid_tickers:
-            changes[ticker] = 0.0
+            changes[ticker] = None
 
     changes["CASH"] = 0.0
+    changes["_status"] = "ok" if any(v is not None for v in changes.values()) else "failed"
     return changes
 
 
@@ -242,30 +245,32 @@ def fetch_historical_mf_data(period):
 
 @st.cache_data(ttl=3600)
 def fetch_amfi_eod_data():
-    """Fetch official EOD NAV, previous EOD NAV, and daily change from AMFI."""
     eod_data = {}
-
     for name, code in mf_amfi_codes.items():
         try:
             df = fetch_amfi_scheme_data(code)
             if df.empty or len(df) < 2:
+                eod_data[name] = {"nav": None, "change": None, "date": None, "ok": False}
                 continue
 
             latest_row = df.iloc[-1]
             prev_row = df.iloc[-2]
-
             latest_nav = safe_float(latest_row["nav"])
             prev_nav = safe_float(prev_row["nav"])
-            change = 0.0 if prev_nav == 0 else ((latest_nav - prev_nav) / prev_nav) * 100
+
+            if prev_nav == 0:
+                change = None
+            else:
+                change = ((latest_nav - prev_nav) / prev_nav) * 100
 
             eod_data[name] = {
                 "nav": latest_nav,
                 "change": change,
                 "date": latest_row["date"].strftime("%d-%b-%Y"),
+                "ok": True,
             }
         except Exception:
-            continue
-
+            eod_data[name] = {"nav": None, "change": None, "date": None, "ok": False}
     return eod_data
 
 
@@ -283,29 +288,35 @@ def safe_float(value, default=0.0):
 def compute_fund_summary():
     market = fetch_index_data()
     live_changes = fetch_live_data([ticker for holdings in funds.values() for ticker in holdings.keys()])
+    amfi = fetch_amfi_eod_data()
 
     rows = []
     for fund_name, holdings in funds.items():
         weighted_impact = 0.0
+        valid_components = 0
+
         for ticker, weight in holdings.items():
-            weighted_impact += weight * float(live_changes.get(ticker, 0.0))
+            change = live_changes.get(ticker)
+            if change is None:
+                continue
+            weighted_impact += weight * float(change)
+            valid_components += 1
 
-        nav_snapshot = fetch_amfi_eod_data().get(fund_name, {})
-        fund_nav = nav_snapshot.get("nav", 0.0)
-        nav_change = nav_snapshot.get("change", 0.0)
-        signal = "Buy" if weighted_impact < -0.5 else "Hold Cash"
+        nav_snapshot = amfi.get(fund_name, {})
+        fund_nav = nav_snapshot.get("nav")
+        nav_change = nav_snapshot.get("change")
 
-        rows.append(
-            {
-                "Fund": fund_name,
-                "Weighted Impact": round(weighted_impact, 2),
-                "NAV": round(fund_nav, 3),
-                "NAV Change": round(nav_change, 2),
-                "Signal": signal,
-            }
-        )
+        signal = "Buy" if valid_components and weighted_impact < -0.5 else "Hold Cash"
 
-    summary = pd.DataFrame(rows).sort_values("Weighted Impact", ascending=True)
+        rows.append({
+            "Fund": fund_name,
+            "Weighted Impact": round(weighted_impact, 2) if valid_components else None,
+            "NAV": round(fund_nav, 3) if fund_nav is not None else None,
+            "NAV Change": round(nav_change, 2) if nav_change is not None else None,
+            "Signal": signal,
+        })
+
+    summary = pd.DataFrame(rows).sort_values("Weighted Impact", ascending=True, na_position="last")
     recommendation = summary.iloc[0] if not summary.empty else None
     return market, summary, recommendation
 
@@ -319,18 +330,25 @@ def main():
 
     market, summary, recommendation = compute_fund_summary()
 
-    if not market:
-        st.warning("Market data is temporarily unavailable. Please refresh in a few moments.")
-        return
+    has_market_data = all(item.get("ok", False) for item in market.values()) if market else False
+    if not has_market_data:
+        st.warning("Market data is temporarily unavailable. Yahoo Finance is not responding right now.")
+        st.stop()
 
-    nifty = market.get("NIFTY 50", {"value": 0.0, "change": 0.0})
-    sensex = market.get("SENSEX", {"value": 0.0, "change": 0.0})
+    nifty = market.get("NIFTY 50", {"value": None, "change": None})
+    sensex = market.get("SENSEX", {"value": None, "change": None})
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.metric("NIFTY 50", f"₹{nifty['value']:,.2f}", f"{nifty['change']:.2f}%")
+        if nifty["value"] is None:
+            st.metric("NIFTY 50", "N/A", "N/A")
+        else:
+            st.metric("NIFTY 50", f"₹{nifty['value']:,.2f}", f"{nifty['change']:.2f}%")
     with c2:
-        st.metric("SENSEX", f"₹{sensex['value']:,.2f}", f"{sensex['change']:.2f}%")
+        if sensex["value"] is None:
+            st.metric("SENSEX", "N/A", "N/A")
+        else:
+            st.metric("SENSEX", f"₹{sensex['value']:,.2f}", f"{sensex['change']:.2f}%")
     with c3:
         if recommendation is not None:
             st.metric("Deployment Signal", recommendation["Signal"], f"{recommendation['Weighted Impact']:.2f}%")
