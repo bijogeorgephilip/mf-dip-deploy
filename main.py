@@ -355,7 +355,7 @@ def main():
         else:
             st.metric("Deployment Signal", "Hold Cash", "0.00%")
 
-    if recommendation is not None:
+    if recommendation is not None and recommendation["Weighted Impact"] is not None:
         st.info(
             f"Best opportunity: {recommendation['Fund']} with a weighted impact of {recommendation['Weighted Impact']:.2f}% — "
             f"recommended action: {recommendation['Signal']}."
