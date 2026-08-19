@@ -5,7 +5,6 @@ from datetime import datetime
 import pytz
 import requests
 import yfinance as yf
-import time
 import json
 import concurrent.futures
 
@@ -168,8 +167,20 @@ def fetch_historical_mf_data(period="1mo"):
             df_list.append(df.rename(columns={"date": "Date"}))
     return pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
 
+# --- COLOR FORMATTING FUNCTION ---
+def style_negative_positive(val):
+    """Pandas Styler function to color text based on value."""
+    if isinstance(val, (int, float)):
+        if val > 0:
+            return 'color: #00c853;' # Green
+        elif val < 0:
+            return 'color: #ff4b4b;' # Red
+        else:
+            return 'color: #808495;' # Gray
+    return ''
+
 # --- COMPUTATION ENGINE ---
-def compute_fund_summary():
+def compute_fund_summary(strong_thresh, medium_thresh):
     market = fetch_yahoo_index_data()
     all_tickers = list(set(ticker for holdings in funds.values() for ticker in holdings.keys()))
     stock_info_dict = fetch_yahoo_live_stocks(all_tickers)
@@ -190,11 +201,13 @@ def compute_fund_summary():
         nav_data = amfi.get(fund_name, {})
         prev_nav = nav_data.get("nav", 0.0) or 0.0
         
+        # Calculate Estimated Live Intraday NAV for 2:00 PM execution
         estimated_intraday_nav = prev_nav * (1 + (weighted_impact / 100)) if prev_nav else 0.0
         
+        # Applying dynamic thresholds from sidebar
         if not valid_components: signal = "Hold Cash"
-        elif weighted_impact <= -0.50: signal = "Strong Buy"
-        elif weighted_impact <= -0.25: signal = "Medium Buy"
+        elif weighted_impact <= strong_thresh: signal = "Strong Buy"
+        elif weighted_impact <= medium_thresh: signal = "Medium Buy"
         else: signal = "Hold Cash"
 
         rows.append({
@@ -212,13 +225,26 @@ def compute_fund_summary():
 
 # --- DASHBOARD UI ---
 def main():
-    st.title("📉 MF Dip Analyzer Pro (1:30 PM Execution Engine)")
-    st.caption("Predicts same-day NAV changes using live stock weights for optimal intraday dip-buying.")
+    st.title("📉 MF Dip Analyzer Pro")
+    st.caption("2:00 PM Execution Engine: Predicts same-day NAV changes using live stock weights.")
 
-    if st.button("Refresh data"):
+    # --- SIDEBAR SETTINGS & TIMESTAMP ---
+    st.sidebar.header("⚙️ Execution Settings")
+    
+    # Custom Thresholds
+    strong_thresh = st.sidebar.slider("Strong Buy Trigger (%)", min_value=-3.0, max_value=0.0, value=-0.50, step=0.05)
+    medium_thresh = st.sidebar.slider("Medium Buy Trigger (%)", min_value=-1.5, max_value=0.0, value=-0.25, step=0.05)
+    
+    st.sidebar.divider()
+    
+    # Timestamp
+    ist_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%I:%M:%S %p')
+    st.sidebar.metric("Last Data Fetch (IST)", ist_time)
+    if st.sidebar.button("🔄 Force Refresh Data"):
         st.cache_data.clear()
 
-    market, summary, rec, stock_info_dict = compute_fund_summary()
+    # Engine Call
+    market, summary, rec, stock_info_dict = compute_fund_summary(strong_thresh, medium_thresh)
 
     if not market or not market.get("NIFTY 50", {}).get("ok"):
         st.warning("Market indices temporarily unavailable. Yahoo Finance API may be rate-limiting.")
@@ -233,18 +259,23 @@ def main():
         impact = rec['Est. NAV Change (%)']
         impact_str = f"{impact:.2f}%" if pd.notna(impact) else "N/A"
         
-        c3.metric("Deployment Signal", rec["Signal"], impact_str)
+        c3.metric("Top Opportunity Signal", rec["Signal"], impact_str)
         st.info(f"Top Opportunity: **{rec['Fund']}** | Action: **{rec['Signal']}** (Est. Intraday Move: {impact_str})")
 
     # --- MUTUAL FUND INTRADAY NAV PREDICTION TABLE ---
     st.divider()
-    st.subheader("📌 1:30 PM Intraday NAV Projections")
+    st.subheader("📌 2:00 PM Intraday NAV Projections")
     nav_table_df = summary[["Fund", "Prev NAV", "Est. Intraday NAV", "Est. NAV Change (%)", "NAV Date", "Signal"]].copy()
     nav_table_df = nav_table_df.drop_duplicates(subset=["Fund"])
-    st.dataframe(
-        nav_table_df.style.format({"Prev NAV": "₹{:.3f}", "Est. Intraday NAV": "₹{:.3f}", "Est. NAV Change (%)": "{:.2f}%"}, na_rep="N/A"),
-        hide_index=True, use_container_width=True
-    )
+    
+    # Apply color styling to the summary table
+    styled_summary = nav_table_df.style.format({
+        "Prev NAV": "₹{:.3f}", 
+        "Est. Intraday NAV": "₹{:.3f}", 
+        "Est. NAV Change (%)": "{:.2f}%"
+    }, na_rep="N/A").map(style_negative_positive, subset=["Est. NAV Change (%)"])
+    
+    st.dataframe(styled_summary, hide_index=True, use_container_width=True)
 
     # Bar Chart
     st.divider()
@@ -286,12 +317,19 @@ def main():
         with cols[idx]:
             with st.expander(f"{fund_name}", expanded=True):
                 rows = []
+                advancers = 0
+                decliners = 0
+                
                 for ticker, data in holdings.items():
                     info = stock_info_dict.get(ticker, {})
                     val = info.get("change")
                     price = info.get("price", 0.0)
                     
                     display_change = float(val) if pd.notna(val) else 0.0
+                    
+                    # Track Market Breadth
+                    if display_change > 0: advancers += 1
+                    elif display_change < 0: decliners += 1
                     
                     if pd.isna(val):
                         st.caption(f"⚠️ Market data unavailable for '{ticker}' today.")
@@ -304,17 +342,19 @@ def main():
                         "NAV Impact": (data["weight"] * display_change)
                     })
                 
+                st.caption(f"📈 Advancing: **{advancers}** | 📉 Declining: **{decliners}**")
+                
                 df_stocks = pd.DataFrame(rows).sort_values("NAV Impact", ascending=True)
                 if not df_stocks.empty:
-                    st.dataframe(
-                        df_stocks.style.format({
-                            "Price": "₹{:.2f}", 
-                            "Weight": "{:.1f}%", 
-                            "Live Change": "{:.2f}%", 
-                            "NAV Impact": "{:.3f}%"
-                        }, na_rep="N/A"), 
-                        hide_index=True, use_container_width=True
-                    )
+                    # Apply color styling to the individual stock tables
+                    styled_stocks = df_stocks.style.format({
+                        "Price": "₹{:.2f}", 
+                        "Weight": "{:.1f}%", 
+                        "Live Change": "{:.2f}%", 
+                        "NAV Impact": "{:.3f}%"
+                    }, na_rep="N/A").map(style_negative_positive, subset=["Live Change", "NAV Impact"])
+                    
+                    st.dataframe(styled_stocks, hide_index=True, use_container_width=True)
                 else:
                     st.write("No stock data available.")
 
