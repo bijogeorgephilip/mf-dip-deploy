@@ -54,7 +54,7 @@
         "ITC.NS": {"name": "ITC", "weight": 0.0150},
         "TRENT.NS": {"name": "Trent", "weight": 0.0150},
         "INDIGO.NS": {"name": "InterGlobe Aviation", "weight": 0.0150},
-        "ZOMATO.BO": {"name": "Zomato", "weight": 0.0150},
+        "ETERNAL.NS": {"name": "Eternal", "weight": 0.0150},
         "HAL.NS": {"name": "HAL", "weight": 0.0120},
         "POLICYBZR.NS": {"name": "PB Fintech", "weight": 0.0100},
         "ADANIENT.NS": {"name": "Adani Enterprises", "weight": 0.0237},
