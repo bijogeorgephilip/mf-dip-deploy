@@ -8,6 +8,8 @@ import yfinance as yf
 import json
 import concurrent.futures
 import time
+import xml.etree.ElementTree as ET
+from urllib.parse import quote
 
 # --- ATTEMPT TO LOAD NLP ENGINE ---
 try:
@@ -42,6 +44,17 @@ mf_amfi_codes = {
     "Parag Parikh Flexi Cap Fund Direct Growth": "122639",
     "Helios Flexi Cap Fund Direct Growth": "152135",
 }
+
+# --- HTTP SESSION CREATOR ---
+def get_custom_session():
+    """Creates a custom requests session with browser headers to prevent Yahoo 401 blocks."""
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+    })
+    return session
 
 def standardize_holdings(raw_funds):
     standardized = {}
@@ -86,10 +99,11 @@ funds = load_holdings()
 def fetch_yahoo_index_data():
     indices = {"NIFTY 50": "^NSEI", "SENSEX": "^BSESN"}
     data = {}
+    session = get_custom_session()
     
     for name, ticker in indices.items():
         try:
-            tkr = yf.Ticker(ticker)
+            tkr = yf.Ticker(ticker, session=session)
             hist = tkr.history(period="5d").dropna(subset=['Close'])
             
             if len(hist) >= 2:
@@ -107,10 +121,11 @@ def fetch_yahoo_index_data():
 def fetch_yahoo_live_stocks(tickers):
     stock_data = {}
     valid_tickers = [t for t in tickers if t]
+    session = get_custom_session()
 
     def get_stock_info(ticker):
         try:
-            tkr = yf.Ticker(ticker)
+            tkr = yf.Ticker(ticker, session=session)
             hist = tkr.history(period="5d").dropna(subset=['Close'])
             if len(hist) >= 2:
                 prev_close = hist['Close'].iloc[-2]
@@ -123,7 +138,7 @@ def fetch_yahoo_live_stocks(tickers):
             pass
         return ticker, {"price": 0.0, "change": None}
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         results = executor.map(get_stock_info, valid_tickers)
 
     for ticker, info in results:
@@ -134,12 +149,12 @@ def fetch_yahoo_live_stocks(tickers):
 def fetch_stock_fundamentals(tickers):
     fund_data = {}
     valid_tickers = [t for t in tickers if t]
+    session = get_custom_session()
 
     def get_fundamentals(ticker):
         try:
-            # Stagger the requests to avoid Yahoo Finance 401 Unauthorized / anti-bot blocks
-            time.sleep(0.5) 
-            tkr = yf.Ticker(ticker)
+            time.sleep(0.2)
+            tkr = yf.Ticker(ticker, session=session)
             info = tkr.info or {}
             pe = info.get("trailingPE") or info.get("forwardPE")
             pb = info.get("priceToBook")
@@ -160,23 +175,21 @@ def fetch_stock_fundamentals(tickers):
             pass
         return ticker, {"pe": None, "pb": None, "roe": None, "target_mean": None, "target_high": None, "target_low": None}
 
-    # Reduced workers to 3 to slow down simultaneous requests to Yahoo's .info endpoint
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         results = executor.map(get_fundamentals, valid_tickers)
 
     for ticker, data in results:
         fund_data[ticker] = data
     return fund_data
 
-@st.cache_data(ttl=14400) 
+@st.cache_data(ttl=14400)
 def fetch_news_sentiment(ticker_names):
+    """Fetches news headlines from Google News RSS and analyzes sentiment with VADER."""
     sentiment_data = {}
     if not VADER_AVAILABLE:
         return sentiment_data
 
     analyzer = SentimentIntensityAnalyzer()
-    import xml.etree.ElementTree as ET
-    from urllib.parse import quote
 
     def get_sentiment(ticker, name):
         try:
@@ -184,7 +197,7 @@ def fetch_news_sentiment(ticker_names):
             url = f"https://news.google.com/rss/search?q={quote(query)}&hl=en-IN&gl=IN&ceid=IN:en"
             
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
             }
             response = requests.get(url, headers=headers, timeout=5)
             
@@ -193,7 +206,7 @@ def fetch_news_sentiment(ticker_names):
             
             if response.status_code == 200:
                 root = ET.fromstring(response.text)
-                for item in root.findall('.//item')[:5]:  
+                for item in root.findall('.//item')[:5]:
                     title_elem = item.find('title')
                     title = title_elem.text if title_elem is not None else ""
                     
@@ -218,7 +231,7 @@ def fetch_news_sentiment(ticker_names):
         except Exception:
             return ticker, {"score": 0.0, "label": "Neutral", "headlines": []}
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         futures = [executor.submit(get_sentiment, tkr, name) for tkr, name in ticker_names.items()]
         for future in concurrent.futures.as_completed(futures):
             ticker, data = future.result()
@@ -407,7 +420,7 @@ def main():
     st.caption("Live Execution Engine & Fundamental Analytics: Intraday Dip Detection, Fair Value Estimation & Sentiment NLP.")
 
     if not VADER_AVAILABLE:
-        st.warning("⚠️ VADER Sentiment NLP Library is not installed. Please run `pip install vaderSentiment` in your terminal to enable News Sentiment features.")
+        st.warning("⚠️ VADER Sentiment NLP Library is not installed. Please run `pip install vaderSentiment` to enable News Sentiment features.")
 
     # --- MAIN INTERFACE SETTINGS & TIMESTAMP ---
     with st.expander("⚙️ Execution Settings & System Status", expanded=True):
@@ -428,7 +441,7 @@ def main():
         with col_set3:
             ist_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%I:%M:%S %p')
             st.metric("Last Data Fetch (IST)", ist_time, help="The exact time live market prices were refreshed.")
-            if st.button("🔄 Force Refresh Data", use_container_width=True, help="Click to pull the latest stock prices, fundamentals, and news."):
+            if st.button("🔄 Force Refresh Data", width="stretch", help="Click to pull the latest stock prices, fundamentals, and news."):
                 st.cache_data.clear()
                 st.rerun()
 
@@ -494,7 +507,7 @@ def main():
     st.dataframe(
         styled_summary, 
         hide_index=True, 
-        use_container_width=True,
+        width="stretch",
         column_config={
             "Prev NAV": st.column_config.Column(help="The official AMFI End-Of-Day NAV from the previous trading session."),
             "Est. Intraday NAV": st.column_config.Column(help="Projected live NAV estimated using constituent real-time prices."),
@@ -519,12 +532,12 @@ def main():
         cmap = {"Strong Buy": "#ff4b4b", "Medium Buy": "#f59e0b", "Hold Cash": "#00c853"}
         fig = px.bar(chart_df, x="Fund", y="Est. NAV Change (%)", color="Signal", color_discrete_map=cmap, title="Estimated Live NAV Drop (%)")
         fig.update_layout(template="plotly_dark")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         hist_df = fetch_historical_mf_data()
         if not hist_df.empty:
             fig2 = px.line(hist_df, x="Date", y="Normalized", color="Fund", template="plotly_dark", title="30-Day Historical NAV Performance (Normalized to 100)")
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width="stretch")
 
     with t2:
         st.caption("Cross-fund fundamental comparison based on portfolio weighted metrics from institutional equity analysts.")
@@ -537,7 +550,7 @@ def main():
                 "Valuation Coverage (%)": "{:.1f}%"
             }, na_rep="N/A").map(style_negative_positive, subset=["Target Fair Upside (%)"]),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
             column_config={
                 "Weighted P/E": st.column_config.Column(help="Portfolio Price-to-Earnings Ratio. Lower indicates better relative value."),
                 "Weighted P/B": st.column_config.Column(help="Portfolio Price-to-Book Ratio."),
@@ -587,7 +600,7 @@ def main():
                     "ROE (%)": "{:.2f}%"
                 }, na_rep="N/A").map(style_negative_positive, subset=["Fair Upside (%)"]),
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
                 column_config={
                     "Fair Upside (%)": st.column_config.Column(help="Potential return to institutional mean consensus fair value target."),
                     "Target Low": st.column_config.Column(help="Conservative bear-case target price."),
@@ -603,7 +616,7 @@ def main():
             if donut_data:
                 fig3 = px.pie(pd.DataFrame(donut_data), values='Weight', names='Stock', hole=0.4, template="plotly_dark")
                 fig3.update_traces(textposition='inside', textinfo='percent+label')
-                st.plotly_chart(fig3, use_container_width=True)
+                st.plotly_chart(fig3, width="stretch")
 
     with t5:
         st.caption("Live AI Sentiment Analysis based on recent news headlines from Google News RSS.")
@@ -612,7 +625,7 @@ def main():
             st.dataframe(
                 fund_sent_df.style.map(style_sentiment, subset=["Fund Sentiment"]), 
                 hide_index=True, 
-                use_container_width=True,
+                width="stretch",
                 column_config={
                     "Aggregated Score": st.column_config.Column(help="Weighted sum of polarity scores (-1.0 to 1.0) for the fund's underlying stocks."),
                     "Fund Sentiment": st.column_config.Column(help="Overall tone of the media coverage for the fund's portfolio.")
@@ -641,7 +654,7 @@ def main():
                         "NLP Polarity": "{:.3f}"
                     }).map(style_sentiment, subset=["Sentiment"]),
                     hide_index=True,
-                    use_container_width=True
+                    width="stretch"
                 )
                 
                 # Display Actual Headlines inside Expander
@@ -705,7 +718,7 @@ def main():
                     st.dataframe(
                         styled_stocks, 
                         hide_index=True, 
-                        use_container_width=True,
+                        width="stretch",
                         column_config={
                             "Price": st.column_config.Column(help="The Last Traded Price (LTP) on the exchange."),
                             "Weight": st.column_config.Column(help="The percentage allocation in the fund."),
