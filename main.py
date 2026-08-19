@@ -29,7 +29,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- CLEANED OFFICIAL AMFI SCHEME CODES (Single source of truth to avoid chart duplication) ---
+# --- CLEANED OFFICIAL AMFI SCHEME CODES ---
 mf_amfi_codes = {
     "HDFC Flexi Cap Fund Direct Growth": "118955",
     "Parag Parikh Flexi Cap Fund Direct Growth": "122639",
@@ -40,7 +40,6 @@ def standardize_holdings(raw_funds):
     """Ensures holdings are formatted correctly. Keys are read directly as Yahoo Tickers."""
     standardized = {}
     for fund, holdings in raw_funds.items():
-        # Standardize fund name to match official long names if short names are used
         clean_fund_name = fund
         if fund == "HDFC Flexi Cap": clean_fund_name = "HDFC Flexi Cap Fund Direct Growth"
         elif fund == "Parag Parikh Flexi Cap": clean_fund_name = "Parag Parikh Flexi Cap Fund Direct Growth"
@@ -101,10 +100,10 @@ def fetch_yahoo_index_data():
 
 @st.cache_data(ttl=60)
 def fetch_yahoo_live_stocks(tickers):
-    changes = {}
+    stock_data = {}
     valid_tickers = [t for t in tickers if t]
 
-    def get_stock_change(ticker):
+    def get_stock_info(ticker):
         try:
             tkr = yf.Ticker(ticker)
             hist = tkr.history(period="5d").dropna(subset=['Close'])
@@ -114,20 +113,20 @@ def fetch_yahoo_live_stocks(tickers):
                 change = ((latest - prev_close) / prev_close) * 100
                 
                 if pd.isna(change):
-                    return ticker, None
-                return ticker, float(change)
+                    return ticker, {"price": float(latest), "change": None}
+                return ticker, {"price": float(latest), "change": float(change)}
         except:
             pass
-        return ticker, None
+        return ticker, {"price": 0.0, "change": None}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        results = executor.map(get_stock_change, valid_tickers)
+        results = executor.map(get_stock_info, valid_tickers)
 
-    for ticker, change in results:
-        changes[ticker] = change
+    for ticker, info in results:
+        stock_data[ticker] = info
 
-    changes["_status"] = "ok" if any(v is not None for v in changes.values()) else "failed"
-    return changes
+    stock_data["_status"] = "ok" if any(v["change"] is not None for v in stock_data.values()) else "failed"
+    return stock_data
 
 # --- EXISTING AMFI NAV LOGIC ---
 @st.cache_data(ttl=3600)
@@ -173,7 +172,7 @@ def fetch_historical_mf_data(period="1mo"):
 def compute_fund_summary():
     market = fetch_yahoo_index_data()
     all_tickers = list(set(ticker for holdings in funds.values() for ticker in holdings.keys()))
-    live_changes = fetch_yahoo_live_stocks(all_tickers)
+    stock_info_dict = fetch_yahoo_live_stocks(all_tickers)
     amfi = fetch_amfi_eod_data()
 
     rows = []
@@ -182,7 +181,8 @@ def compute_fund_summary():
         valid_components = 0
 
         for ticker, data in holdings.items():
-            change = live_changes.get(ticker)
+            info = stock_info_dict.get(ticker, {})
+            change = info.get("change")
             if change is not None and pd.notna(change):
                 weighted_impact += data["weight"] * float(change)
                 valid_components += 1
@@ -208,7 +208,7 @@ def compute_fund_summary():
 
     summary = pd.DataFrame(rows).sort_values("Est. NAV Change (%)", ascending=True)
     rec = summary.iloc[0] if not summary.empty else None
-    return market, summary, rec, live_changes
+    return market, summary, rec, stock_info_dict
 
 # --- DASHBOARD UI ---
 def main():
@@ -218,7 +218,7 @@ def main():
     if st.button("Refresh data"):
         st.cache_data.clear()
 
-    market, summary, rec, live_changes = compute_fund_summary()
+    market, summary, rec, stock_info_dict = compute_fund_summary()
 
     if not market or not market.get("NIFTY 50", {}).get("ok"):
         st.warning("Market indices temporarily unavailable. Yahoo Finance API may be rate-limiting.")
@@ -287,7 +287,10 @@ def main():
             with st.expander(f"{fund_name}", expanded=True):
                 rows = []
                 for ticker, data in holdings.items():
-                    val = live_changes.get(ticker)
+                    info = stock_info_dict.get(ticker, {})
+                    val = info.get("change")
+                    price = info.get("price", 0.0)
+                    
                     display_change = float(val) if pd.notna(val) else 0.0
                     
                     if pd.isna(val):
@@ -295,6 +298,7 @@ def main():
 
                     rows.append({
                         "Stock": data["name"],
+                        "Price": price,
                         "Weight": data["weight"] * 100,
                         "Live Change": display_change,
                         "NAV Impact": (data["weight"] * display_change)
@@ -303,7 +307,12 @@ def main():
                 df_stocks = pd.DataFrame(rows).sort_values("NAV Impact", ascending=True)
                 if not df_stocks.empty:
                     st.dataframe(
-                        df_stocks.style.format({"Weight": "{:.1f}%", "Live Change": "{:.2f}%", "NAV Impact": "{:.3f}%"}, na_rep="N/A"), 
+                        df_stocks.style.format({
+                            "Price": "₹{:.2f}", 
+                            "Weight": "{:.1f}%", 
+                            "Live Change": "{:.2f}%", 
+                            "NAV Impact": "{:.3f}%"
+                        }, na_rep="N/A"), 
                         hide_index=True, use_container_width=True
                     )
                 else:
