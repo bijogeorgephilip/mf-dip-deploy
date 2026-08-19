@@ -177,7 +177,7 @@ def compute_fund_summary():
 # --- DASHBOARD UI ---
 def main():
     st.title("📉 MF Dip Analyzer Pro (Groww Native)")
-    st.caption("100% Yahoo-Free. Multi-threaded live scraping directly from Groww endpoints.")
+    st.caption("Multi-threaded live scraping directly from Groww endpoints.")
 
     if st.button("Refresh data"):
         st.cache_data.clear()
@@ -193,8 +193,11 @@ def main():
     c1.metric("NIFTY 50", f"₹{nifty.get('value', 0):,.2f}", f"{nifty.get('change', 0):.2f}%")
     c2.metric("SENSEX", f"₹{sensex.get('value', 0):,.2f}", f"{sensex.get('change', 0):.2f}%")
     
-    if rec is not None:
-        c3.metric("Deployment Signal", rec["Signal"], f"{rec['Weighted Impact']:.2f}%")
+if rec is not None:
+        impact = rec['Weighted Impact']
+        impact_str = f"{impact:.2f}%" if pd.notna(impact) else "N/A"
+        
+        c3.metric("Deployment Signal", rec["Signal"], impact_str)
         st.info(f"Top Opportunity: **{rec['Fund']}** | Action: **{rec['Signal']}**")
 
     # Bar Chart
