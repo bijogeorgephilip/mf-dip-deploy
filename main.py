@@ -167,16 +167,26 @@ def fetch_historical_mf_data(period="1mo"):
             df_list.append(df.rename(columns={"date": "Date"}))
     return pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
 
-# --- COLOR FORMATTING FUNCTION ---
+# --- COLOR FORMATTING FUNCTIONS ---
 def style_negative_positive(val):
-    """Pandas Styler function to color text based on value."""
+    """Colors numbers: Green for positive, Red for negative, Gray for zero."""
     if isinstance(val, (int, float)):
         if val > 0:
-            return 'color: #00c853;' # Green
+            return 'color: #00c853;'  # Green
         elif val < 0:
-            return 'color: #ff4b4b;' # Red
+            return 'color: #ff4b4b;'  # Red
         else:
-            return 'color: #808495;' # Gray
+            return 'color: #808495;'  # Gray
+    return ''
+
+def style_signal(val):
+    """Colors signals: Green for Hold Cash, Orange for Medium Buy, Red for Strong Buy."""
+    if val == "Strong Buy":
+        return 'color: #ff4b4b; font-weight: 700;'
+    elif val == "Medium Buy":
+        return 'color: #f59e0b; font-weight: 700;'
+    elif val == "Hold Cash":
+        return 'color: #00c853; font-weight: 700;'
     return ''
 
 # --- COMPUTATION ENGINE ---
@@ -201,7 +211,7 @@ def compute_fund_summary(strong_thresh, medium_thresh):
         nav_data = amfi.get(fund_name, {})
         prev_nav = nav_data.get("nav", 0.0) or 0.0
         
-        # Calculate Estimated Live Intraday NAV for 2:00 PM execution
+        # Calculate Estimated Live Intraday NAV
         estimated_intraday_nav = prev_nav * (1 + (weighted_impact / 100)) if prev_nav else 0.0
         
         # Applying dynamic thresholds from UI
@@ -226,7 +236,7 @@ def compute_fund_summary(strong_thresh, medium_thresh):
 # --- DASHBOARD UI ---
 def main():
     st.title("📉 MF Dip Analyzer Pro")
-    st.caption("2:00 PM Execution Engine: Predicts same-day NAV changes using live stock weights.")
+    st.caption("Live Execution Engine: Predicts same-day NAV changes using real-time stock weights (Ideal for pre-cutoff deployment).")
 
     # --- MAIN INTERFACE SETTINGS & TIMESTAMP ---
     with st.expander("⚙️ Execution Settings & System Status", expanded=True):
@@ -273,20 +283,43 @@ def main():
             impact_str, 
             help="Identifies the mutual fund with the deepest estimated dip right now, offering the best relative value for your capital."
         )
-        st.info(f"Top Opportunity: **{rec['Fund']}** | Action: **{rec['Signal']}** (Est. Intraday Move: {impact_str})")
+        
+        # --- NEW PREMIUM ALERT BANNER ---
+        signal_val = rec['Signal']
+        banner_color = "#ff4b4b" if signal_val == "Strong Buy" else "#f59e0b" if signal_val == "Medium Buy" else "#00c853"
+        bg_color = "rgba(255, 75, 75, 0.15)" if signal_val == "Strong Buy" else "rgba(245, 158, 11, 0.15)" if signal_val == "Medium Buy" else "rgba(0, 200, 83, 0.12)"
+        icon = "🚨" if signal_val == "Strong Buy" else "⚡" if signal_val == "Medium Buy" else "🛡️"
+        
+        st.markdown(f"""
+        <div style="border: 1px solid {banner_color}; background-color: {bg_color}; padding: 25px; border-radius: 12px; text-align: center; margin: 25px 0;">
+            <h2 style="color: {banner_color}; margin: 0; padding-bottom: 8px; font-size: 2.2rem; font-weight: 700; text-shadow: 0px 1px 3px rgba(0,0,0,0.5);">
+                {icon} {signal_val.upper()}
+            </h2>
+            <div style="font-size: 1.4rem; color: #f8fafc; font-weight: 500;">
+                Target Fund: <strong>{rec['Fund']}</strong>
+            </div>
+            <div style="font-size: 1.2rem; color: #94a3b8; margin-top: 8px;">
+                Estimated Intraday Drop: <span style="color: {banner_color}; font-weight: bold; font-size: 1.3rem;">{impact_str}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     # --- MUTUAL FUND INTRADAY NAV PREDICTION TABLE ---
     st.divider()
-    st.subheader("📌 2:00 PM Intraday NAV Projections")
+    st.subheader("📌 Live Intraday NAV Projections")
     nav_table_df = summary[["Fund", "Prev NAV", "Est. Intraday NAV", "Est. NAV Change (%)", "NAV Date", "Signal"]].copy()
     nav_table_df = nav_table_df.drop_duplicates(subset=["Fund"])
     
-    # Apply color styling to the summary table
+    # Apply color styling to both numbers and signals
     styled_summary = nav_table_df.style.format({
         "Prev NAV": "₹{:.3f}", 
         "Est. Intraday NAV": "₹{:.3f}", 
         "Est. NAV Change (%)": "{:.2f}%"
-    }, na_rep="N/A").map(style_negative_positive, subset=["Est. NAV Change (%)"])
+    }, na_rep="N/A").map(
+        style_negative_positive, subset=["Est. NAV Change (%)"]
+    ).map(
+        style_signal, subset=["Signal"]
+    )
     
     st.dataframe(
         styled_summary, 
@@ -294,17 +327,17 @@ def main():
         use_container_width=True,
         column_config={
             "Prev NAV": st.column_config.Column(help="The official AMFI End-Of-Day NAV from the previous trading session."),
-            "Est. Intraday NAV": st.column_config.Column(help="Projected live NAV for today, estimated using the current stock market data."),
+            "Est. Intraday NAV": st.column_config.Column(help="Projected live NAV for right now, estimated using the latest stock market data."),
             "Est. NAV Change (%)": st.column_config.Column(help="The estimated percentage drop/gain of the fund's NAV right now. (Sum of all underlying stock NAV Impacts)."),
             "Signal": st.column_config.Column(help="Actionable deployment signal based on the custom threshold triggers set above.")
         }
     )
 
-    # Bar Chart
+    # Bar Chart with Updated Color Map
     st.divider()
     chart_df = summary.drop_duplicates(subset=["Fund"]).copy()
-    cmap = {"Strong Buy": "#f23645", "Medium Buy": "#f59e0b", "Hold Cash": "#38bdf8"}
-    fig = px.bar(chart_df, x="Fund", y="Est. NAV Change (%)", color="Signal", color_discrete_map=cmap, title="Estimated Intraday NAV Drop (%)")
+    cmap = {"Strong Buy": "#ff4b4b", "Medium Buy": "#f59e0b", "Hold Cash": "#00c853"}
+    fig = px.bar(chart_df, x="Fund", y="Est. NAV Change (%)", color="Signal", color_discrete_map=cmap, title="Estimated Live NAV Drop (%)")
     fig.update_layout(template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
@@ -355,7 +388,7 @@ def main():
                     elif display_change < 0: decliners += 1
                     
                     if pd.isna(val):
-                        st.caption(f"⚠️ Market data unavailable for '{ticker}' today.")
+                        st.caption(f"⚠️ Market data unavailable for '{ticker}'.")
 
                     rows.append({
                         "Stock": data["name"],
