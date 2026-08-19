@@ -233,13 +233,21 @@ def main():
         col_set1, col_set2, col_set3 = st.columns(3)
         
         with col_set1:
-            strong_thresh = st.slider("Strong Buy Trigger (%)", min_value=-3.0, max_value=0.0, value=-0.50, step=0.05)
+            strong_thresh = st.slider(
+                "Strong Buy Trigger (%)", 
+                min_value=-3.0, max_value=0.0, value=-0.50, step=0.05,
+                help="Set the percentage drop required to flag a 'Strong Buy'. A lower number (e.g., -1.5%) means you only want to deploy heavy capital during steeper market corrections."
+            )
         with col_set2:
-            medium_thresh = st.slider("Medium Buy Trigger (%)", min_value=-1.5, max_value=0.0, value=-0.25, step=0.05)
+            medium_thresh = st.slider(
+                "Medium Buy Trigger (%)", 
+                min_value=-1.5, max_value=0.0, value=-0.25, step=0.05,
+                help="Set the percentage drop for a 'Medium Buy'. Useful for deploying smaller tranches of cash during routine market dips."
+            )
         with col_set3:
             ist_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%I:%M:%S %p')
-            st.metric("Last Data Fetch (IST)", ist_time)
-            if st.button("🔄 Force Refresh Data", use_container_width=True):
+            st.metric("Last Data Fetch (IST)", ist_time, help="The exact time the live market data was last pulled from Yahoo Finance.")
+            if st.button("🔄 Force Refresh Data", use_container_width=True, help="Click to clear the cache and immediately pull the latest stock prices."):
                 st.cache_data.clear()
                 st.rerun()
 
@@ -252,14 +260,19 @@ def main():
     c1, c2, c3 = st.columns(3)
     nifty, sensex = market.get("NIFTY 50", {}), market.get("SENSEX", {})
     
-    c1.metric("NIFTY 50", f"₹{nifty.get('value', 0):,.2f}", f"{nifty.get('change', 0):.2f}%")
-    c2.metric("SENSEX", f"₹{sensex.get('value', 0):,.2f}", f"{sensex.get('change', 0):.2f}%")
+    c1.metric("NIFTY 50", f"₹{nifty.get('value', 0):,.2f}", f"{nifty.get('change', 0):.2f}%", help="The live benchmark value for the top 50 Indian companies.")
+    c2.metric("SENSEX", f"₹{sensex.get('value', 0):,.2f}", f"{sensex.get('change', 0):.2f}%", help="The live benchmark value for the top 30 BSE companies.")
     
     if rec is not None:
         impact = rec['Est. NAV Change (%)']
         impact_str = f"{impact:.2f}%" if pd.notna(impact) else "N/A"
         
-        c3.metric("Top Opportunity Signal", rec["Signal"], impact_str)
+        c3.metric(
+            "Top Opportunity Signal", 
+            rec["Signal"], 
+            impact_str, 
+            help="Identifies the mutual fund with the deepest estimated dip right now, offering the best relative value for your capital."
+        )
         st.info(f"Top Opportunity: **{rec['Fund']}** | Action: **{rec['Signal']}** (Est. Intraday Move: {impact_str})")
 
     # --- MUTUAL FUND INTRADAY NAV PREDICTION TABLE ---
@@ -275,7 +288,17 @@ def main():
         "Est. NAV Change (%)": "{:.2f}%"
     }, na_rep="N/A").map(style_negative_positive, subset=["Est. NAV Change (%)"])
     
-    st.dataframe(styled_summary, hide_index=True, use_container_width=True)
+    st.dataframe(
+        styled_summary, 
+        hide_index=True, 
+        use_container_width=True,
+        column_config={
+            "Prev NAV": st.column_config.Column(help="The official AMFI End-Of-Day NAV from the previous trading session."),
+            "Est. Intraday NAV": st.column_config.Column(help="Projected live NAV for today, estimated using the current stock market data."),
+            "Est. NAV Change (%)": st.column_config.Column(help="The estimated percentage drop/gain of the fund's NAV right now. (Sum of all underlying stock NAV Impacts)."),
+            "Signal": st.column_config.Column(help="Actionable deployment signal based on the custom threshold triggers set above.")
+        }
+    )
 
     # Bar Chart
     st.divider()
@@ -342,7 +365,7 @@ def main():
                         "NAV Impact": (data["weight"] * display_change)
                     })
                 
-                st.caption(f"📈 Advancing: **{advancers}** | 📉 Declining: **{decliners}**")
+                st.caption(f"📈 Advancing: **{advancers}** | 📉 Declining: **{decliners}**", help="Market breadth indicator: Shows how many tracked stocks in this fund are currently trading positive vs negative.")
                 
                 # Sorted by Weight (Descending) by default
                 df_stocks = pd.DataFrame(rows).sort_values("Weight", ascending=False)
@@ -356,7 +379,17 @@ def main():
                         "NAV Impact": "{:.3f}%"
                     }, na_rep="N/A").map(style_negative_positive, subset=["Live Change", "NAV Impact"])
                     
-                    st.dataframe(styled_stocks, hide_index=True, use_container_width=True)
+                    st.dataframe(
+                        styled_stocks, 
+                        hide_index=True, 
+                        use_container_width=True,
+                        column_config={
+                            "Price": st.column_config.Column(help="The Last Traded Price (LTP) of the stock on the exchange."),
+                            "Weight": st.column_config.Column(help="The percentage of the fund's total assets invested in this specific stock."),
+                            "Live Change": st.column_config.Column(help="The real-time percentage change of the stock's price today."),
+                            "NAV Impact": st.column_config.Column(help="Calculated as (Weight × Live Change). Shows exactly how much this single stock's movement is dragging down or lifting up the entire fund's NAV today.")
+                        }
+                    )
                 else:
                     st.write("No stock data available.")
 
