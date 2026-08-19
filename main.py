@@ -8,6 +8,13 @@ import yfinance as yf
 import json
 import concurrent.futures
 
+# --- ATTEMPT TO LOAD NLP ENGINE ---
+try:
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+    VADER_AVAILABLE = True
+except ImportError:
+    VADER_AVAILABLE = False
+
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="MF Dip Analyzer Pro", page_icon="📉", layout="wide")
 
@@ -36,7 +43,6 @@ mf_amfi_codes = {
 }
 
 def standardize_holdings(raw_funds):
-    """Ensures holdings are formatted correctly. Keys are read directly as Yahoo Tickers."""
     standardized = {}
     for fund, holdings in raw_funds.items():
         clean_fund_name = fund
@@ -94,7 +100,6 @@ def fetch_yahoo_index_data():
                 data[name] = {"value": 0.0, "change": 0.0, "ok": False}
         except Exception:
             data[name] = {"value": 0.0, "change": 0.0, "ok": False}
-            
     return data
 
 @st.cache_data(ttl=60)
@@ -110,7 +115,6 @@ def fetch_yahoo_live_stocks(tickers):
                 prev_close = hist['Close'].iloc[-2]
                 latest = hist['Close'].iloc[-1]
                 change = ((latest - prev_close) / prev_close) * 100
-                
                 if pd.isna(change):
                     return ticker, {"price": float(latest), "change": None}
                 return ticker, {"price": float(latest), "change": float(change)}
@@ -123,13 +127,10 @@ def fetch_yahoo_live_stocks(tickers):
 
     for ticker, info in results:
         stock_data[ticker] = info
-
-    stock_data["_status"] = "ok" if any(v["change"] is not None for v in stock_data.values()) else "failed"
     return stock_data
 
 @st.cache_data(ttl=14400)
 def fetch_stock_fundamentals(tickers):
-    """Fetches valuation metrics and analyst price targets for intrinsic valuation analysis."""
     fund_data = {}
     valid_tickers = [t for t in tickers if t]
 
@@ -162,6 +163,52 @@ def fetch_stock_fundamentals(tickers):
     for ticker, data in results:
         fund_data[ticker] = data
     return fund_data
+
+@st.cache_data(ttl=14400) # Cache news for 4 hours
+def fetch_news_sentiment(tickers):
+    sentiment_data = {}
+    if not VADER_AVAILABLE:
+        return sentiment_data
+
+    analyzer = SentimentIntensityAnalyzer()
+    valid_tickers = [t for t in tickers if t]
+
+    def get_sentiment(ticker):
+        try:
+            tkr = yf.Ticker(ticker)
+            news = tkr.news
+            if not news:
+                return ticker, {"score": 0.0, "label": "Neutral", "headlines": []}
+            
+            total_score = 0.0
+            headlines = []
+            
+            for article in news[:5]: # Analyze top 5 recent articles
+                title = article.get('title', '')
+                publisher = article.get('publisher', 'Unknown')
+                link = article.get('link', '#')
+                
+                if title:
+                    score = analyzer.polarity_scores(title)['compound']
+                    total_score += score
+                    headlines.append({"title": title, "publisher": publisher, "score": score, "link": link})
+            
+            avg_score = total_score / len(headlines) if headlines else 0.0
+            
+            if avg_score > 0.05: label = "Bullish"
+            elif avg_score < -0.05: label = "Bearish"
+            else: label = "Neutral"
+            
+            return ticker, {"score": avg_score, "label": label, "headlines": headlines}
+        except:
+            return ticker, {"score": 0.0, "label": "Neutral", "headlines": []}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        results = executor.map(get_sentiment, valid_tickers)
+
+    for ticker, data in results:
+        sentiment_data[ticker] = data
+    return sentiment_data
 
 # --- AMFI NAV LOGIC ---
 @st.cache_data(ttl=3600)
@@ -217,16 +264,24 @@ def style_signal(val):
     elif val == "Hold Cash": return 'color: #00c853; font-weight: 700;'
     return ''
 
+def style_sentiment(val):
+    if val == "Bullish": return 'color: #00c853; font-weight: 700;'
+    elif val == "Bearish": return 'color: #ff4b4b; font-weight: 700;'
+    elif val == "Neutral": return 'color: #808495; font-weight: 700;'
+    return ''
+
 # --- COMPUTATION ENGINE ---
 def compute_fund_summary(strong_thresh, medium_thresh):
     market = fetch_yahoo_index_data()
     all_tickers = list(set(ticker for holdings in funds.values() for ticker in holdings.keys()))
     stock_info_dict = fetch_yahoo_live_stocks(all_tickers)
     fundamentals_dict = fetch_stock_fundamentals(all_tickers)
+    sentiment_dict = fetch_news_sentiment(all_tickers)
     amfi = fetch_amfi_eod_data()
 
     rows = []
     peer_rows = []
+    fund_sentiment_rows = []
     
     for fund_name, holdings in funds.items():
         weighted_impact = 0.0
@@ -236,16 +291,20 @@ def compute_fund_summary(strong_thresh, medium_thresh):
         weighted_pb = 0.0
         weighted_roe = 0.0
         weighted_upside = 0.0
+        weighted_sentiment = 0.0
+        
         weight_pe_cov = 0.0
         weight_pb_cov = 0.0
         weight_roe_cov = 0.0
         weight_target_cov = 0.0
+        weight_sentiment_cov = 0.0
 
         for ticker, data in holdings.items():
             info = stock_info_dict.get(ticker, {})
             fund_stats = fundamentals_dict.get(ticker, {})
-            w = data["weight"]
+            sent_stats = sentiment_dict.get(ticker, {})
             
+            w = data["weight"]
             change = info.get("change")
             price = info.get("price", 0.0)
             
@@ -266,6 +325,10 @@ def compute_fund_summary(strong_thresh, medium_thresh):
                 upside = ((fund_stats["target_mean"] - price) / price) * 100
                 weighted_upside += w * upside
                 weight_target_cov += w
+                
+            if "score" in sent_stats:
+                weighted_sentiment += w * sent_stats["score"]
+                weight_sentiment_cov += w
 
         nav_data = amfi.get(fund_name, {})
         prev_nav = nav_data.get("nav", 0.0) or 0.0
@@ -293,16 +356,36 @@ def compute_fund_summary(strong_thresh, medium_thresh):
             "Target Fair Upside (%)": round(weighted_upside / weight_target_cov, 2) if weight_target_cov > 0 else None,
             "Valuation Coverage (%)": round(weight_target_cov * 100, 1)
         })
+        
+        # Calculate Fund Level Sentiment
+        if weight_sentiment_cov > 0:
+            final_sent_score = weighted_sentiment / weight_sentiment_cov
+            if final_sent_score > 0.05: f_label = "Bullish"
+            elif final_sent_score < -0.05: f_label = "Bearish"
+            else: f_label = "Neutral"
+        else:
+            final_sent_score = 0.0
+            f_label = "N/A"
+            
+        fund_sentiment_rows.append({
+            "Fund": fund_name,
+            "Aggregated Score": round(final_sent_score, 3),
+            "Fund Sentiment": f_label
+        })
 
     summary = pd.DataFrame(rows).sort_values("Est. NAV Change (%)", ascending=True)
     peer_df = pd.DataFrame(peer_rows)
+    fund_sent_df = pd.DataFrame(fund_sentiment_rows)
     rec = summary.iloc[0] if not summary.empty else None
-    return market, summary, rec, stock_info_dict, fundamentals_dict, peer_df
+    return market, summary, rec, stock_info_dict, fundamentals_dict, sentiment_dict, peer_df, fund_sent_df
 
 # --- DASHBOARD UI ---
 def main():
     st.title("📉 MF Dip Analyzer Pro")
-    st.caption("Live Execution Engine & Fundamental Analytics: Intraday Dip Detection, Fair Value Estimation & Peer Benchmarks.")
+    st.caption("Live Execution Engine & Fundamental Analytics: Intraday Dip Detection, Fair Value Estimation & Sentiment NLP.")
+
+    if not VADER_AVAILABLE:
+        st.warning("⚠️ VADER Sentiment NLP Library is not installed. Please run `pip install vaderSentiment` in your terminal to enable News Sentiment features.")
 
     # --- MAIN INTERFACE SETTINGS & TIMESTAMP ---
     with st.expander("⚙️ Execution Settings & System Status", expanded=True):
@@ -323,12 +406,12 @@ def main():
         with col_set3:
             ist_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%I:%M:%S %p')
             st.metric("Last Data Fetch (IST)", ist_time, help="The exact time live market prices were refreshed.")
-            if st.button("🔄 Force Refresh Data", use_container_width=True, help="Click to pull the latest stock prices and fundamentals."):
+            if st.button("🔄 Force Refresh Data", use_container_width=True, help="Click to pull the latest stock prices, fundamentals, and news."):
                 st.cache_data.clear()
                 st.rerun()
 
     # Engine Call
-    market, summary, rec, stock_info_dict, fundamentals_dict, peer_df = compute_fund_summary(strong_thresh, medium_thresh)
+    market, summary, rec, stock_info_dict, fundamentals_dict, sentiment_dict, peer_df, fund_sent_df = compute_fund_summary(strong_thresh, medium_thresh)
 
     if not market or not market.get("NIFTY 50", {}).get("ok"):
         st.warning("Market indices temporarily unavailable. Yahoo Finance API may be rate-limiting.")
@@ -401,11 +484,12 @@ def main():
     # --- ANALYTICS & FUNDAMENTAL SUITE ---
     st.divider()
     st.subheader("📊 Quantitative & Fundamental Analytics Suite")
-    t1, t2, t3, t4 = st.tabs([
+    t1, t2, t3, t4, t5 = st.tabs([
         "Intraday Dip Chart", 
         "Peer Fundamentals & Intrinsic Upside", 
         "Intrinsic Valuation Explorer", 
-        "Holdings Breakdown"
+        "Holdings Breakdown",
+        "News & Sentiment NLP"
     ])
     
     with t1:
@@ -440,19 +524,6 @@ def main():
                 "Valuation Coverage (%)": st.column_config.Column(help="Percentage of the portfolio that has active analyst price target coverage.")
             }
         )
-        
-        # Peer Comparison Chart
-        if not peer_df.empty:
-            fig_peer = px.bar(
-                peer_df, 
-                x="Fund", 
-                y="Target Fair Upside (%)", 
-                title="Consensus Intrinsic Target Upside Potential by Fund (%)", 
-                template="plotly_dark",
-                color="Target Fair Upside (%)",
-                color_continuous_scale="Blues"
-            )
-            st.plotly_chart(fig_peer, use_container_width=True)
 
     with t3:
         st.caption("Deep-dive into individual stock fair value targets, analyst price bands, and fundamental health ratios.")
@@ -511,6 +582,58 @@ def main():
                 fig3 = px.pie(pd.DataFrame(donut_data), values='Weight', names='Stock', hole=0.4, template="plotly_dark")
                 fig3.update_traces(textposition='inside', textinfo='percent+label')
                 st.plotly_chart(fig3, use_container_width=True)
+
+    with t5:
+        st.caption("Live AI Sentiment Analysis based on recent news headlines for constituent stocks.")
+        
+        if VADER_AVAILABLE:
+            st.dataframe(
+                fund_sent_df.style.map(style_sentiment, subset=["Fund Sentiment"]), 
+                hide_index=True, 
+                use_container_width=True,
+                column_config={
+                    "Aggregated Score": st.column_config.Column(help="Weighted sum of polarity scores (-1.0 to 1.0) for the fund's underlying stocks."),
+                    "Fund Sentiment": st.column_config.Column(help="Overall tone of the media coverage for the fund's portfolio.")
+                }
+            )
+            
+            st.markdown("### Top Individual Stock Movers (News Driven)")
+            selected_sent_fund = st.selectbox("Select Fund for News Breakdown:", list(funds.keys()), key="fund_sent_select")
+            fund_stocks_sent = funds.get(selected_sent_fund, {})
+            
+            if fund_stocks_sent:
+                sent_rows = []
+                for ticker, data in fund_stocks_sent.items():
+                    s_stats = sentiment_dict.get(ticker, {})
+                    sent_rows.append({
+                        "Stock": data["name"],
+                        "Weight": data["weight"] * 100,
+                        "NLP Polarity": s_stats.get("score", 0.0),
+                        "Sentiment": s_stats.get("label", "Neutral")
+                    })
+                
+                s_df = pd.DataFrame(sent_rows).sort_values("NLP Polarity", ascending=False)
+                st.dataframe(
+                    s_df.style.format({
+                        "Weight": "{:.1f}%",
+                        "NLP Polarity": "{:.3f}"
+                    }).map(style_sentiment, subset=["Sentiment"]),
+                    hide_index=True,
+                    use_container_width=True
+                )
+                
+                # Display Actual Headlines inside Expander
+                st.markdown("#### Read Underlying Headlines")
+                for ticker, data in fund_stocks_sent.items():
+                    s_stats = sentiment_dict.get(ticker, {})
+                    headlines = s_stats.get("headlines", [])
+                    if headlines:
+                        with st.expander(f"📰 {data['name']} ({s_stats.get('label', 'Neutral')})"):
+                            for h in headlines:
+                                emoji = "🟢" if h['score'] > 0.05 else "🔴" if h['score'] < -0.05 else "⚪"
+                                st.markdown(f"{emoji} **[{h['publisher']}]** {h['title']} (Score: {h['score']:.2f})")
+        else:
+            st.error("Please run `pip install vaderSentiment` to enable News & Sentiment Analytics.")
 
     # --- DETAILED HOLDINGS TABLE ---
     st.divider()
