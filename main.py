@@ -205,7 +205,7 @@ def fetch_amfi_scheme_data(code):
 
 @st.cache_data(ttl=3600)
 def fetch_historical_mf_data(period):
-    hist_data = pd.DataFrame()
+    df_list = []
     days_to_fetch = {"1mo": 30, "3mo": 90, "1y": 365, "5y": 1825}.get(period, 30)
 
     for name, code in mf_amfi_codes.items():
@@ -214,8 +214,11 @@ def fetch_historical_mf_data(period):
             if df.empty:
                 continue
 
-            cutoff_date = get_ist_now() - pd.Timedelta(days=days_to_fetch)
-            df = df[df["date"] >= cutoff_date.tz_localize(None)]
+            # Anchor to the actual latest date in the AMFI data instead of system clock
+            max_date = df["date"].max()
+            cutoff_date = max_date - pd.Timedelta(days=days_to_fetch)
+            
+            df = df[df["date"] >= cutoff_date]
             if df.empty:
                 continue
 
@@ -223,11 +226,13 @@ def fetch_historical_mf_data(period):
             df["Normalized"] = (df["nav"] / df["nav"].iloc[0]) * 100
             df["Fund"] = name
             df = df.rename(columns={"date": "Date"})
-            hist_data = pd.concat([hist_data, df[["Date", "Normalized", "Fund"]]], ignore_index=True)
+            df_list.append(df[["Date", "Normalized", "Fund"]])
         except Exception:
             continue
 
-    return hist_data
+    if df_list:
+        return pd.concat(df_list, ignore_index=True)
+    return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def fetch_amfi_eod_data():
@@ -258,9 +263,6 @@ def fetch_amfi_eod_data():
         except Exception:
             eod_data[name] = {"nav": None, "change": None, "date": None, "ok": False}
     return eod_data
-
-def get_ist_now():
-    return datetime.now(pytz.timezone("Asia/Kolkata"))
 
 def safe_float(value, default=0.0):
     try:
@@ -302,7 +304,6 @@ def compute_fund_summary():
     summary = pd.DataFrame(rows).sort_values("Weighted Impact", ascending=True, na_position="last")
     recommendation = summary.iloc[0] if not summary.empty else None
     
-    # Return live_changes for the holdings breakdown
     return market, summary, recommendation, live_changes
 
 def main():
@@ -312,10 +313,8 @@ def main():
     if st.button("Refresh data"):
         st.cache_data.clear()
 
-    # Unpack live_changes
     market, summary, recommendation, live_changes = compute_fund_summary()
 
-    # Use 'any' so dashboard works even if one index fails to load
     has_market_data = any(item.get("ok", False) for item in market.values()) if market else False
     if not has_market_data:
         st.warning("Market data is temporarily unavailable. Yahoo Finance is not responding right now.")
@@ -380,7 +379,7 @@ def main():
             """
         )
 
-    # --- RESTORED: HISTORICAL NAV TRACKER & DONUT CHART ---
+    # --- RESTORED & UPGRADED: HISTORICAL NAV TRACKER & DONUT CHART ---
     st.divider()
     st.subheader("📊 Advanced Analytics")
     
@@ -405,35 +404,37 @@ def main():
         else:
             st.warning("Historical NAV data is currently unavailable.")
 
-    # 2. Donut Chart for Recommended Fund Holdings
+    # 2. Donut Chart with Dropdown Selection
     with tab2:
-        if recommendation is not None:
-            rec_fund_name = recommendation["Fund"]
-            st.caption(f"Top Holdings Weightage for current target: **{rec_fund_name}**")
+        st.caption("View the exact stock weightages inside your Flexi Cap funds.")
+        
+        # Default the dropdown to the recommended fund if available
+        fund_names = list(funds.keys())
+        default_idx = 0
+        if recommendation is not None and recommendation["Fund"] in fund_names:
+            default_idx = fund_names.index(recommendation["Fund"])
             
-            # Get the holdings for the recommended fund
-            rec_holdings = funds.get(rec_fund_name, {})
-            if rec_holdings:
-                donut_df = pd.DataFrame(list(rec_holdings.items()), columns=["Stock", "Weight"])
-                # Formatting stock names for cleaner display
-                donut_df["Stock"] = donut_df["Stock"].str.replace(".NS", "")
-                
-                fig_donut = px.pie(
-                    donut_df, 
-                    values='Weight', 
-                    names='Stock', 
-                    hole=0.4,
-                    title=f"{rec_fund_name} Allocation",
-                    template="plotly_dark"
-                )
-                fig_donut.update_traces(textposition='inside', textinfo='percent+label')
-                st.plotly_chart(fig_donut, use_container_width=True)
-            else:
-                st.info("No holdings data available to generate donut chart.")
+        selected_fund = st.selectbox("Select Fund to view allocation:", fund_names, index=default_idx)
+        
+        rec_holdings = funds.get(selected_fund, {})
+        if rec_holdings:
+            donut_df = pd.DataFrame(list(rec_holdings.items()), columns=["Stock", "Weight"])
+            donut_df["Stock"] = donut_df["Stock"].str.replace(".NS", "")
+            
+            fig_donut = px.pie(
+                donut_df, 
+                values='Weight', 
+                names='Stock', 
+                hole=0.4,
+                title=f"{selected_fund} Allocation",
+                template="plotly_dark"
+            )
+            fig_donut.update_traces(textposition='inside', textinfo='percent+label')
+            st.plotly_chart(fig_donut, use_container_width=True)
         else:
-            st.info("Waiting for a deployment signal to generate allocation chart.")
+            st.info("No holdings data available to generate donut chart.")
 
-# --- INDIVIDUAL HOLDINGS BREAKDOWN ---
+    # --- INDIVIDUAL HOLDINGS BREAKDOWN ---
     st.divider()
     st.subheader("🔍 Individual Fund Holdings Breakdown")
     
@@ -441,31 +442,27 @@ def main():
     
     for idx, (fund_name, holdings) in enumerate(funds.items()):
         with cols[idx]:
-            # Added expanded=True to keep it open by default
             with st.expander(f"{fund_name} Stocks", expanded=True):
                 stock_rows = []
                 for ticker, weight in holdings.items():
                     val = live_changes.get(ticker)
                     
-                    # Calculate the actual mathematical impact on the NAV
                     impact = (weight * val) if val is not None else 0.0
                     
                     stock_rows.append({
                         "Stock": ticker.replace(".NS", ""),
                         "Weight": weight * 100,
                         "Live Change": val,
-                        "Impact": impact
+                        "NAV Impact": impact  # Renamed for better clarity
                     })
                 
-                # Sort by Impact (most negative impact at the top to highlight the dip)
-                df_stocks = pd.DataFrame(stock_rows).sort_values("Impact", ascending=True)
+                df_stocks = pd.DataFrame(stock_rows).sort_values("NAV Impact", ascending=True)
                 
-                # Format the display cleanly
                 st.dataframe(
                     df_stocks.style.format({
                         "Weight": "{:.1f}%", 
                         "Live Change": "{:.2f}%",
-                        "Impact": "{:.3f}%"
+                        "NAV Impact": "{:.3f}%"
                     }, na_rep="N/A"), 
                     use_container_width=True, 
                     hide_index=True
