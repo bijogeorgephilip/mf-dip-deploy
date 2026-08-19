@@ -4,3 +4,4 @@ pandas
 plotly
 pytz
 requests
+cloudscraper
