@@ -380,6 +380,59 @@ def main():
             """
         )
 
+    # --- RESTORED: HISTORICAL NAV TRACKER & DONUT CHART ---
+    st.divider()
+    st.subheader("📊 Advanced Analytics")
+    
+    tab1, tab2 = st.tabs(["Historical NAV Performance", "Fund Holdings Breakdown (Donut)"])
+    
+    # 1. Historical NAV Line Chart
+    with tab1:
+        st.caption("Tracking normalized NAV performance over the last 30 days.")
+        hist_data = fetch_historical_mf_data("1mo")
+        
+        if not hist_data.empty:
+            fig_line = px.line(
+                hist_data,
+                x="Date",
+                y="Normalized",
+                color="Fund",
+                title="30-Day Normalized NAV Trend (Base 100)",
+                template="plotly_dark"
+            )
+            fig_line.update_layout(hovermode="x unified", xaxis_title="", yaxis_title="Normalized NAV")
+            st.plotly_chart(fig_line, use_container_width=True)
+        else:
+            st.warning("Historical NAV data is currently unavailable.")
+
+    # 2. Donut Chart for Recommended Fund Holdings
+    with tab2:
+        if recommendation is not None:
+            rec_fund_name = recommendation["Fund"]
+            st.caption(f"Top Holdings Weightage for current target: **{rec_fund_name}**")
+            
+            # Get the holdings for the recommended fund
+            rec_holdings = funds.get(rec_fund_name, {})
+            if rec_holdings:
+                donut_df = pd.DataFrame(list(rec_holdings.items()), columns=["Stock", "Weight"])
+                # Formatting stock names for cleaner display
+                donut_df["Stock"] = donut_df["Stock"].str.replace(".NS", "")
+                
+                fig_donut = px.pie(
+                    donut_df, 
+                    values='Weight', 
+                    names='Stock', 
+                    hole=0.4,
+                    title=f"{rec_fund_name} Allocation",
+                    template="plotly_dark"
+                )
+                fig_donut.update_traces(textposition='inside', textinfo='percent+label')
+                st.plotly_chart(fig_donut, use_container_width=True)
+            else:
+                st.info("No holdings data available to generate donut chart.")
+        else:
+            st.info("Waiting for a deployment signal to generate allocation chart.")
+
     # --- INDIVIDUAL HOLDINGS BREAKDOWN ---
     st.divider()
     st.subheader("🔍 Individual Fund Holdings Breakdown")
