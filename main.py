@@ -40,7 +40,7 @@ mf_amfi_codes = {
 }
 
 def standardize_holdings(raw_funds):
-    """Ensures holdings are formatted correctly. Keys are now read directly as Yahoo Tickers."""
+    """Ensures holdings are formatted correctly. Keys are read directly as Yahoo Tickers."""
     standardized = {}
     for fund, holdings in raw_funds.items():
         std_holdings = {}
@@ -146,11 +146,11 @@ def fetch_amfi_eod_data():
     eod = {}
     for name, code in mf_amfi_codes.items():
         df = fetch_amfi_scheme_data(code)
-        if not df.empty and len(df) >= 2:
-            latest, prev = df.iloc[-1]["nav"], df.iloc[-2]["nav"]
-            eod[name] = {"nav": latest, "change": ((latest - prev) / prev) * 100, "date": df.iloc[-1]["date"].strftime("%d-%m-%Y")}
+        if not df.empty and len(df) >= 1:
+            latest = df.iloc[-1]["nav"]
+            eod[name] = {"nav": latest, "date": df.iloc[-1]["date"].strftime("%d-%m-%Y")}
         else:
-            eod[name] = {"nav": None, "change": None, "date": "N/A"}
+            eod[name] = {"nav": None, "date": "N/A"}
     return eod
 
 @st.cache_data(ttl=3600)
@@ -166,7 +166,7 @@ def fetch_historical_mf_data(period="1mo"):
             df_list.append(df.rename(columns={"date": "Date"}))
     return pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
 
-# --- COMPUTATION ENGINE ---
+# --- COMPUTATION ENGINE (INTRADAY NAV PREDICTOR) ---
 def compute_fund_summary():
     market = fetch_yahoo_index_data()
     all_tickers = list(set(ticker for holdings in funds.values() for ticker in holdings.keys()))
@@ -185,7 +185,12 @@ def compute_fund_summary():
                 valid_components += 1
 
         nav_data = amfi.get(fund_name, {})
+        prev_nav = nav_data.get("nav", 0.0) or 0.0
         
+        # Calculate Estimated Live Intraday NAV for 1:30 PM execution
+        estimated_intraday_nav = prev_nav * (1 + (weighted_impact / 100)) if prev_nav else 0.0
+        
+        # Decision Signals based on Estimated Intraday NAV Drop (%)
         if not valid_components: signal = "Hold Cash"
         elif weighted_impact <= -0.50: signal = "Strong Buy"
         elif weighted_impact <= -0.25: signal = "Medium Buy"
@@ -193,21 +198,21 @@ def compute_fund_summary():
 
         rows.append({
             "Fund": fund_name,
-            "Weighted Impact": round(weighted_impact, 2) if valid_components else 0.0,
-            "NAV": round(nav_data.get("nav", 0), 3) if nav_data.get("nav") else None,
-            "NAV Change": round(nav_data.get("change", 0), 2) if nav_data.get("change") else None,
+            "Prev NAV": round(prev_nav, 3),
+            "Est. Intraday NAV": round(estimated_intraday_nav, 3),
+            "Est. NAV Change (%)": round(weighted_impact, 2) if valid_components else 0.0,
             "NAV Date": nav_data.get("date", "N/A"),
             "Signal": signal,
         })
 
-    summary = pd.DataFrame(rows).sort_values("Weighted Impact", ascending=True)
+    summary = pd.DataFrame(rows).sort_values("Est. NAV Change (%)", ascending=True)
     rec = summary.iloc[0] if not summary.empty else None
     return market, summary, rec, live_changes
 
 # --- DASHBOARD UI ---
 def main():
-    st.title("📉 MF Dip Analyzer Pro (yfinance Edition)")
-    st.caption("Powered by Yahoo Finance API & AMFI Official NAV Endpoints.")
+    st.title("📉 MF Dip Analyzer Pro (1:30 PM Execution Engine)")
+    st.caption("Predicts same-day NAV changes using live stock weights for optimal intraday dip-buying.")
 
     if st.button("Refresh data"):
         st.cache_data.clear()
@@ -224,19 +229,19 @@ def main():
     c2.metric("SENSEX", f"₹{sensex.get('value', 0):,.2f}", f"{sensex.get('change', 0):.2f}%")
     
     if rec is not None:
-        impact = rec['Weighted Impact']
+        impact = rec['Est. NAV Change (%)']
         impact_str = f"{impact:.2f}%" if pd.notna(impact) else "N/A"
         
         c3.metric("Deployment Signal", rec["Signal"], impact_str)
-        st.info(f"Top Opportunity: **{rec['Fund']}** | Action: **{rec['Signal']}**")
+        st.info(f"Top Opportunity: **{rec['Fund']}** | Action: **{rec['Signal']}** (Est. Intraday Move: {impact_str})")
 
-    # --- NEW: MUTUAL FUND NAV PERFORMANCE TABLE ---
+    # --- MUTUAL FUND INTRADAY NAV PREDICTION TABLE ---
     st.divider()
-    st.subheader("📌 Mutual Fund NAV Overview (AMFI EOD)")
-    nav_table_df = summary[["Fund", "NAV", "NAV Change", "NAV Date", "Signal"]].copy()
-    nav_table_df = nav_table_df.drop_duplicates(subset=["Fund"]) # Clean duplicates if short/long names overlap
+    st.subheader("📌 1:30 PM Intraday NAV Projections")
+    nav_table_df = summary[["Fund", "Prev NAV", "Est. Intraday NAV", "Est. NAV Change (%)", "NAV Date", "Signal"]].copy()
+    nav_table_df = nav_table_df.drop_duplicates(subset=["Fund"])
     st.dataframe(
-        nav_table_df.style.format({"NAV": "₹{:.3f}", "NAV Change": "{:.2f}%"}, na_rep="N/A"),
+        nav_table_df.style.format({"Prev NAV": "₹{:.3f}", "Est. Intraday NAV": "₹{:.3f}", "Est. NAV Change (%)": "{:.2f}%"}, na_rep="N/A"),
         hide_index=True, use_container_width=True
     )
 
@@ -244,7 +249,7 @@ def main():
     st.divider()
     chart_df = summary.drop_duplicates(subset=["Fund"]).copy()
     cmap = {"Strong Buy": "#f23645", "Medium Buy": "#f59e0b", "Hold Cash": "#38bdf8"}
-    fig = px.bar(chart_df, x="Fund", y="Weighted Impact", color="Signal", color_discrete_map=cmap, title="Estimated Portfolio Impact Today")
+    fig = px.bar(chart_df, x="Fund", y="Est. NAV Change (%)", color="Signal", color_discrete_map=cmap, title="Estimated Intraday NAV Drop (%)")
     fig.update_layout(template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
