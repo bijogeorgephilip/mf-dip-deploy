@@ -29,11 +29,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- OFFICIAL AMFI SCHEME CODES ---
+# --- CLEANED OFFICIAL AMFI SCHEME CODES (Single source of truth to avoid chart duplication) ---
 mf_amfi_codes = {
-    "HDFC Flexi Cap": "118955",
-    "Parag Parikh Flexi Cap": "122639",
-    "Helios Flexi Cap": "152135",
     "HDFC Flexi Cap Fund Direct Growth": "118955",
     "Parag Parikh Flexi Cap Fund Direct Growth": "122639",
     "Helios Flexi Cap Fund Direct Growth": "152135",
@@ -43,6 +40,12 @@ def standardize_holdings(raw_funds):
     """Ensures holdings are formatted correctly. Keys are read directly as Yahoo Tickers."""
     standardized = {}
     for fund, holdings in raw_funds.items():
+        # Standardize fund name to match official long names if short names are used
+        clean_fund_name = fund
+        if fund == "HDFC Flexi Cap": clean_fund_name = "HDFC Flexi Cap Fund Direct Growth"
+        elif fund == "Parag Parikh Flexi Cap": clean_fund_name = "Parag Parikh Flexi Cap Fund Direct Growth"
+        elif fund == "Helios Flexi Cap": clean_fund_name = "Helios Flexi Cap Fund Direct Growth"
+        
         std_holdings = {}
         if isinstance(holdings, dict):
             for ticker, data in holdings.items():
@@ -55,7 +58,7 @@ def standardize_holdings(raw_funds):
                     std_holdings[ticker] = {"name": ticker, "weight": float(data)}
                 else:
                     std_holdings[ticker] = {"name": str(data), "weight": 0.0}
-        standardized[fund] = std_holdings
+        standardized[clean_fund_name] = std_holdings
     return standardized
 
 @st.cache_data(ttl=3600)
@@ -166,7 +169,7 @@ def fetch_historical_mf_data(period="1mo"):
             df_list.append(df.rename(columns={"date": "Date"}))
     return pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
 
-# --- COMPUTATION ENGINE (INTRADAY NAV PREDICTOR) ---
+# --- COMPUTATION ENGINE ---
 def compute_fund_summary():
     market = fetch_yahoo_index_data()
     all_tickers = list(set(ticker for holdings in funds.values() for ticker in holdings.keys()))
@@ -187,10 +190,8 @@ def compute_fund_summary():
         nav_data = amfi.get(fund_name, {})
         prev_nav = nav_data.get("nav", 0.0) or 0.0
         
-        # Calculate Estimated Live Intraday NAV for 1:30 PM execution
         estimated_intraday_nav = prev_nav * (1 + (weighted_impact / 100)) if prev_nav else 0.0
         
-        # Decision Signals based on Estimated Intraday NAV Drop (%)
         if not valid_components: signal = "Hold Cash"
         elif weighted_impact <= -0.50: signal = "Strong Buy"
         elif weighted_impact <= -0.25: signal = "Medium Buy"
