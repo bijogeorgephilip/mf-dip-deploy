@@ -165,33 +165,49 @@ def fetch_stock_fundamentals(tickers):
     return fund_data
 
 @st.cache_data(ttl=14400) # Cache news for 4 hours
-def fetch_news_sentiment(tickers):
+def fetch_news_sentiment(ticker_names):
+    """
+    Bypasses Yahoo Finance's 401 blocks by using Google News RSS.
+    Takes a dictionary mapping {ticker: company_name}.
+    """
     sentiment_data = {}
     if not VADER_AVAILABLE:
         return sentiment_data
 
     analyzer = SentimentIntensityAnalyzer()
-    valid_tickers = [t for t in tickers if t]
+    import xml.etree.ElementTree as ET
+    from urllib.parse import quote
 
-    def get_sentiment(ticker):
+    def get_sentiment(ticker, name):
         try:
-            tkr = yf.Ticker(ticker)
-            news = tkr.news
-            if not news:
-                return ticker, {"score": 0.0, "label": "Neutral", "headlines": []}
+            # Query Google News for the specific company in the Indian market context
+            query = f"{name} stock India"
+            url = f"https://news.google.com/rss/search?q={quote(query)}&hl=en-IN&gl=IN&ceid=IN:en"
             
-            total_score = 0.0
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+            response = requests.get(url, headers=headers, timeout=5)
+            
             headlines = []
+            total_score = 0.0
             
-            for article in news[:5]: # Analyze top 5 recent articles
-                title = article.get('title', '')
-                publisher = article.get('publisher', 'Unknown')
-                link = article.get('link', '#')
-                
-                if title:
-                    score = analyzer.polarity_scores(title)['compound']
-                    total_score += score
-                    headlines.append({"title": title, "publisher": publisher, "score": score, "link": link})
+            if response.status_code == 200:
+                root = ET.fromstring(response.text)
+                for item in root.findall('.//item')[:5]:  # Grab top 5 recent articles
+                    title_elem = item.find('title')
+                    title = title_elem.text if title_elem is not None else ""
+                    
+                    link_elem = item.find('link')
+                    link = link_elem.text if link_elem is not None else "#"
+                    
+                    source_elem = item.find('source')
+                    source = source_elem.text if source_elem is not None else "News"
+                    
+                    if title:
+                        score = analyzer.polarity_scores(title)['compound']
+                        total_score += score
+                        headlines.append({"title": title, "publisher": source, "score": score, "link": link})
             
             avg_score = total_score / len(headlines) if headlines else 0.0
             
@@ -200,14 +216,17 @@ def fetch_news_sentiment(tickers):
             else: label = "Neutral"
             
             return ticker, {"score": avg_score, "label": label, "headlines": headlines}
-        except:
+        except Exception:
+            # Safe fallback if Google News rate limits or structural changes occur
             return ticker, {"score": 0.0, "label": "Neutral", "headlines": []}
 
+    # Run network calls concurrently for speed
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        results = executor.map(get_sentiment, valid_tickers)
-
-    for ticker, data in results:
-        sentiment_data[ticker] = data
+        futures = [executor.submit(get_sentiment, tkr, name) for tkr, name in ticker_names.items()]
+        for future in concurrent.futures.as_completed(futures):
+            ticker, data = future.result()
+            sentiment_data[ticker] = data
+            
     return sentiment_data
 
 # --- AMFI NAV LOGIC ---
@@ -273,10 +292,18 @@ def style_sentiment(val):
 # --- COMPUTATION ENGINE ---
 def compute_fund_summary(strong_thresh, medium_thresh):
     market = fetch_yahoo_index_data()
-    all_tickers = list(set(ticker for holdings in funds.values() for ticker in holdings.keys()))
+    
+    # Map tickers to their company names so Google News can search accurately
+    all_tickers_names = {}
+    for holdings in funds.values():
+        for ticker, data in holdings.items():
+            all_tickers_names[ticker] = data["name"]
+            
+    all_tickers = list(all_tickers_names.keys())
+    
     stock_info_dict = fetch_yahoo_live_stocks(all_tickers)
     fundamentals_dict = fetch_stock_fundamentals(all_tickers)
-    sentiment_dict = fetch_news_sentiment(all_tickers)
+    sentiment_dict = fetch_news_sentiment(all_tickers_names)
     amfi = fetch_amfi_eod_data()
 
     rows = []
@@ -584,7 +611,7 @@ def main():
                 st.plotly_chart(fig3, use_container_width=True)
 
     with t5:
-        st.caption("Live AI Sentiment Analysis based on recent news headlines for constituent stocks.")
+        st.caption("Live AI Sentiment Analysis based on recent news headlines from Google News RSS.")
         
         if VADER_AVAILABLE:
             st.dataframe(
@@ -631,7 +658,7 @@ def main():
                         with st.expander(f"📰 {data['name']} ({s_stats.get('label', 'Neutral')})"):
                             for h in headlines:
                                 emoji = "🟢" if h['score'] > 0.05 else "🔴" if h['score'] < -0.05 else "⚪"
-                                st.markdown(f"{emoji} **[{h['publisher']}]** {h['title']} (Score: {h['score']:.2f})")
+                                st.markdown(f"{emoji} **[{h['publisher']}]** [{h['title']}]({h['link']}) (Score: {h['score']:.2f})")
         else:
             st.error("Please run `pip install vaderSentiment` to enable News & Sentiment Analytics.")
 
