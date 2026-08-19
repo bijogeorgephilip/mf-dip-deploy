@@ -66,7 +66,7 @@ def load_holdings():
             raw_data = json.load(file)
             return standardize_holdings(raw_data)
     except FileNotFoundError:
-        st.error("Holdings file not found. Please run update_holdings.py first.")
+        st.error("Holdings file not found. Please ensure holdings.json is available.")
         return {}
     except json.JSONDecodeError:
         st.error("Error reading holdings.json. Ensure it is valid JSON.")
@@ -74,7 +74,7 @@ def load_holdings():
 
 funds = load_holdings()
 
-# --- YFINANCE DATA SCRAPER ---
+# --- YFINANCE DATA SCRAPERS ---
 @st.cache_data(ttl=60)
 def fetch_yahoo_index_data():
     indices = {"NIFTY 50": "^NSEI", "SENSEX": "^BSESN"}
@@ -127,7 +127,43 @@ def fetch_yahoo_live_stocks(tickers):
     stock_data["_status"] = "ok" if any(v["change"] is not None for v in stock_data.values()) else "failed"
     return stock_data
 
-# --- EXISTING AMFI NAV LOGIC ---
+@st.cache_data(ttl=14400)
+def fetch_stock_fundamentals(tickers):
+    """Fetches valuation metrics and analyst price targets for intrinsic valuation analysis."""
+    fund_data = {}
+    valid_tickers = [t for t in tickers if t]
+
+    def get_fundamentals(ticker):
+        try:
+            tkr = yf.Ticker(ticker)
+            info = tkr.info or {}
+            pe = info.get("trailingPE") or info.get("forwardPE")
+            pb = info.get("priceToBook")
+            roe = info.get("returnOnEquity")
+            target_mean = info.get("targetMeanPrice")
+            target_high = info.get("targetHighPrice")
+            target_low = info.get("targetLowPrice")
+            
+            return ticker, {
+                "pe": float(pe) if pe and pe > 0 else None,
+                "pb": float(pb) if pb and pb > 0 else None,
+                "roe": float(roe) * 100 if roe else None,
+                "target_mean": float(target_mean) if target_mean else None,
+                "target_high": float(target_high) if target_high else None,
+                "target_low": float(target_low) if target_low else None
+            }
+        except:
+            pass
+        return ticker, {"pe": None, "pb": None, "roe": None, "target_mean": None, "target_high": None, "target_low": None}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        results = executor.map(get_fundamentals, valid_tickers)
+
+    for ticker, data in results:
+        fund_data[ticker] = data
+    return fund_data
+
+# --- AMFI NAV LOGIC ---
 @st.cache_data(ttl=3600)
 def fetch_amfi_scheme_data(code):
     url = f"https://api.mfapi.in/mf/{code}"
@@ -169,24 +205,16 @@ def fetch_historical_mf_data(period="1mo"):
 
 # --- COLOR FORMATTING FUNCTIONS ---
 def style_negative_positive(val):
-    """Colors numbers: Green for positive, Red for negative, Gray for zero."""
     if isinstance(val, (int, float)):
-        if val > 0:
-            return 'color: #00c853;'  # Green
-        elif val < 0:
-            return 'color: #ff4b4b;'  # Red
-        else:
-            return 'color: #808495;'  # Gray
+        if val > 0: return 'color: #00c853;'
+        elif val < 0: return 'color: #ff4b4b;'
+        else: return 'color: #808495;'
     return ''
 
 def style_signal(val):
-    """Colors signals: Green for Hold Cash, Orange for Medium Buy, Red for Strong Buy."""
-    if val == "Strong Buy":
-        return 'color: #ff4b4b; font-weight: 700;'
-    elif val == "Medium Buy":
-        return 'color: #f59e0b; font-weight: 700;'
-    elif val == "Hold Cash":
-        return 'color: #00c853; font-weight: 700;'
+    if val == "Strong Buy": return 'color: #ff4b4b; font-weight: 700;'
+    elif val == "Medium Buy": return 'color: #f59e0b; font-weight: 700;'
+    elif val == "Hold Cash": return 'color: #00c853; font-weight: 700;'
     return ''
 
 # --- COMPUTATION ENGINE ---
@@ -194,27 +222,55 @@ def compute_fund_summary(strong_thresh, medium_thresh):
     market = fetch_yahoo_index_data()
     all_tickers = list(set(ticker for holdings in funds.values() for ticker in holdings.keys()))
     stock_info_dict = fetch_yahoo_live_stocks(all_tickers)
+    fundamentals_dict = fetch_stock_fundamentals(all_tickers)
     amfi = fetch_amfi_eod_data()
 
     rows = []
+    peer_rows = []
+    
     for fund_name, holdings in funds.items():
         weighted_impact = 0.0
         valid_components = 0
+        
+        weighted_pe = 0.0
+        weighted_pb = 0.0
+        weighted_roe = 0.0
+        weighted_upside = 0.0
+        weight_pe_cov = 0.0
+        weight_pb_cov = 0.0
+        weight_roe_cov = 0.0
+        weight_target_cov = 0.0
 
         for ticker, data in holdings.items():
             info = stock_info_dict.get(ticker, {})
+            fund_stats = fundamentals_dict.get(ticker, {})
+            w = data["weight"]
+            
             change = info.get("change")
+            price = info.get("price", 0.0)
+            
             if change is not None and pd.notna(change):
-                weighted_impact += data["weight"] * float(change)
+                weighted_impact += w * float(change)
                 valid_components += 1
+
+            if fund_stats.get("pe"):
+                weighted_pe += w * fund_stats["pe"]
+                weight_pe_cov += w
+            if fund_stats.get("pb"):
+                weighted_pb += w * fund_stats["pb"]
+                weight_pb_cov += w
+            if fund_stats.get("roe"):
+                weighted_roe += w * fund_stats["roe"]
+                weight_roe_cov += w
+            if fund_stats.get("target_mean") and price > 0:
+                upside = ((fund_stats["target_mean"] - price) / price) * 100
+                weighted_upside += w * upside
+                weight_target_cov += w
 
         nav_data = amfi.get(fund_name, {})
         prev_nav = nav_data.get("nav", 0.0) or 0.0
-        
-        # Calculate Estimated Live Intraday NAV
         estimated_intraday_nav = prev_nav * (1 + (weighted_impact / 100)) if prev_nav else 0.0
         
-        # Applying dynamic thresholds from UI
         if not valid_components: signal = "Hold Cash"
         elif weighted_impact <= strong_thresh: signal = "Strong Buy"
         elif weighted_impact <= medium_thresh: signal = "Medium Buy"
@@ -229,14 +285,24 @@ def compute_fund_summary(strong_thresh, medium_thresh):
             "Signal": signal,
         })
 
+        peer_rows.append({
+            "Fund": fund_name,
+            "Weighted P/E": round(weighted_pe / weight_pe_cov, 1) if weight_pe_cov > 0 else None,
+            "Weighted P/B": round(weighted_pb / weight_pb_cov, 2) if weight_pb_cov > 0 else None,
+            "Weighted ROE (%)": round(weighted_roe / weight_roe_cov, 2) if weight_roe_cov > 0 else None,
+            "Target Fair Upside (%)": round(weighted_upside / weight_target_cov, 2) if weight_target_cov > 0 else None,
+            "Valuation Coverage (%)": round(weight_target_cov * 100, 1)
+        })
+
     summary = pd.DataFrame(rows).sort_values("Est. NAV Change (%)", ascending=True)
+    peer_df = pd.DataFrame(peer_rows)
     rec = summary.iloc[0] if not summary.empty else None
-    return market, summary, rec, stock_info_dict
+    return market, summary, rec, stock_info_dict, fundamentals_dict, peer_df
 
 # --- DASHBOARD UI ---
 def main():
     st.title("📉 MF Dip Analyzer Pro")
-    st.caption("Live Execution Engine: Predicts same-day NAV changes using real-time stock weights (Ideal for pre-cutoff deployment).")
+    st.caption("Live Execution Engine & Fundamental Analytics: Intraday Dip Detection, Fair Value Estimation & Peer Benchmarks.")
 
     # --- MAIN INTERFACE SETTINGS & TIMESTAMP ---
     with st.expander("⚙️ Execution Settings & System Status", expanded=True):
@@ -246,23 +312,23 @@ def main():
             strong_thresh = st.slider(
                 "Strong Buy Trigger (%)", 
                 min_value=-3.0, max_value=0.0, value=-0.50, step=0.05,
-                help="Set the percentage drop required to flag a 'Strong Buy'. A lower number (e.g., -1.5%) means you only want to deploy heavy capital during steeper market corrections."
+                help="Set the percentage drop required to flag a 'Strong Buy'."
             )
         with col_set2:
             medium_thresh = st.slider(
                 "Medium Buy Trigger (%)", 
                 min_value=-1.5, max_value=0.0, value=-0.25, step=0.05,
-                help="Set the percentage drop for a 'Medium Buy'. Useful for deploying smaller tranches of cash during routine market dips."
+                help="Set the percentage drop for a 'Medium Buy'."
             )
         with col_set3:
             ist_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%I:%M:%S %p')
-            st.metric("Last Data Fetch (IST)", ist_time, help="The exact time the live market data was last pulled from Yahoo Finance.")
-            if st.button("🔄 Force Refresh Data", use_container_width=True, help="Click to clear the cache and immediately pull the latest stock prices."):
+            st.metric("Last Data Fetch (IST)", ist_time, help="The exact time live market prices were refreshed.")
+            if st.button("🔄 Force Refresh Data", use_container_width=True, help="Click to pull the latest stock prices and fundamentals."):
                 st.cache_data.clear()
                 st.rerun()
 
     # Engine Call
-    market, summary, rec, stock_info_dict = compute_fund_summary(strong_thresh, medium_thresh)
+    market, summary, rec, stock_info_dict, fundamentals_dict, peer_df = compute_fund_summary(strong_thresh, medium_thresh)
 
     if not market or not market.get("NIFTY 50", {}).get("ok"):
         st.warning("Market indices temporarily unavailable. Yahoo Finance API may be rate-limiting.")
@@ -270,8 +336,8 @@ def main():
     c1, c2, c3 = st.columns(3)
     nifty, sensex = market.get("NIFTY 50", {}), market.get("SENSEX", {})
     
-    c1.metric("NIFTY 50", f"₹{nifty.get('value', 0):,.2f}", f"{nifty.get('change', 0):.2f}%", help="The live benchmark value for the top 50 Indian companies.")
-    c2.metric("SENSEX", f"₹{sensex.get('value', 0):,.2f}", f"{sensex.get('change', 0):.2f}%", help="The live benchmark value for the top 30 BSE companies.")
+    c1.metric("NIFTY 50", f"₹{nifty.get('value', 0):,.2f}", f"{nifty.get('change', 0):.2f}%", help="Live benchmark value for the Nifty 50 Index.")
+    c2.metric("SENSEX", f"₹{sensex.get('value', 0):,.2f}", f"{sensex.get('change', 0):.2f}%", help="Live benchmark value for the Sensex Index.")
     
     if rec is not None:
         impact = rec['Est. NAV Change (%)']
@@ -281,25 +347,25 @@ def main():
             "Top Opportunity Signal", 
             rec["Signal"], 
             impact_str, 
-            help="Identifies the mutual fund with the deepest estimated dip right now, offering the best relative value for your capital."
+            help="The fund with the steepest estimated intraday dip right now."
         )
         
-        # --- NEW PREMIUM ALERT BANNER ---
+        # --- PREMIUM ALERT BANNER ---
         signal_val = rec['Signal']
         banner_color = "#ff4b4b" if signal_val == "Strong Buy" else "#f59e0b" if signal_val == "Medium Buy" else "#00c853"
         bg_color = "rgba(255, 75, 75, 0.15)" if signal_val == "Strong Buy" else "rgba(245, 158, 11, 0.15)" if signal_val == "Medium Buy" else "rgba(0, 200, 83, 0.12)"
         icon = "🚨" if signal_val == "Strong Buy" else "⚡" if signal_val == "Medium Buy" else "🛡️"
         
         st.markdown(f"""
-        <div style="border: 1px solid {banner_color}; background-color: {bg_color}; padding: 25px; border-radius: 12px; text-align: center; margin: 25px 0;">
-            <h2 style="color: {banner_color}; margin: 0; padding-bottom: 8px; font-size: 2.2rem; font-weight: 700; text-shadow: 0px 1px 3px rgba(0,0,0,0.5);">
+        <div style="border: 1px solid {banner_color}; background-color: {bg_color}; padding: 22px; border-radius: 12px; text-align: center; margin: 20px 0;">
+            <h2 style="color: {banner_color}; margin: 0; padding-bottom: 6px; font-size: 2.1rem; font-weight: 700;">
                 {icon} {signal_val.upper()}
             </h2>
-            <div style="font-size: 1.4rem; color: #f8fafc; font-weight: 500;">
+            <div style="font-size: 1.35rem; color: #f8fafc; font-weight: 500;">
                 Target Fund: <strong>{rec['Fund']}</strong>
             </div>
-            <div style="font-size: 1.2rem; color: #94a3b8; margin-top: 8px;">
-                Estimated Intraday Drop: <span style="color: {banner_color}; font-weight: bold; font-size: 1.3rem;">{impact_str}</span>
+            <div style="font-size: 1.15rem; color: #94a3b8; margin-top: 6px;">
+                Estimated Intraday Move: <span style="color: {banner_color}; font-weight: bold; font-size: 1.25rem;">{impact_str}</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -310,7 +376,6 @@ def main():
     nav_table_df = summary[["Fund", "Prev NAV", "Est. Intraday NAV", "Est. NAV Change (%)", "NAV Date", "Signal"]].copy()
     nav_table_df = nav_table_df.drop_duplicates(subset=["Fund"])
     
-    # Apply color styling to both numbers and signals
     styled_summary = nav_table_df.style.format({
         "Prev NAV": "₹{:.3f}", 
         "Est. Intraday NAV": "₹{:.3f}", 
@@ -327,33 +392,118 @@ def main():
         use_container_width=True,
         column_config={
             "Prev NAV": st.column_config.Column(help="The official AMFI End-Of-Day NAV from the previous trading session."),
-            "Est. Intraday NAV": st.column_config.Column(help="Projected live NAV for right now, estimated using the latest stock market data."),
-            "Est. NAV Change (%)": st.column_config.Column(help="The estimated percentage drop/gain of the fund's NAV right now. (Sum of all underlying stock NAV Impacts)."),
-            "Signal": st.column_config.Column(help="Actionable deployment signal based on the custom threshold triggers set above.")
+            "Est. Intraday NAV": st.column_config.Column(help="Projected live NAV estimated using constituent real-time prices."),
+            "Est. NAV Change (%)": st.column_config.Column(help="Estimated percentage move of the fund's NAV right now."),
+            "Signal": st.column_config.Column(help="Actionable deployment recommendation.")
         }
     )
 
-    # Bar Chart with Updated Color Map
+    # --- ANALYTICS & FUNDAMENTAL SUITE ---
     st.divider()
-    chart_df = summary.drop_duplicates(subset=["Fund"]).copy()
-    cmap = {"Strong Buy": "#ff4b4b", "Medium Buy": "#f59e0b", "Hold Cash": "#00c853"}
-    fig = px.bar(chart_df, x="Fund", y="Est. NAV Change (%)", color="Signal", color_discrete_map=cmap, title="Estimated Live NAV Drop (%)")
-    fig.update_layout(template="plotly_dark")
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Analytics Tabs
-    st.divider()
-    st.subheader("📊 Advanced Analytics")
-    t1, t2 = st.tabs(["Historical NAV", "Holdings Breakdown"])
+    st.subheader("📊 Quantitative & Fundamental Analytics Suite")
+    t1, t2, t3, t4 = st.tabs([
+        "Intraday Dip Chart", 
+        "Peer Fundamentals & Intrinsic Upside", 
+        "Intrinsic Valuation Explorer", 
+        "Holdings Breakdown"
+    ])
     
     with t1:
+        chart_df = summary.drop_duplicates(subset=["Fund"]).copy()
+        cmap = {"Strong Buy": "#ff4b4b", "Medium Buy": "#f59e0b", "Hold Cash": "#00c853"}
+        fig = px.bar(chart_df, x="Fund", y="Est. NAV Change (%)", color="Signal", color_discrete_map=cmap, title="Estimated Live NAV Drop (%)")
+        fig.update_layout(template="plotly_dark")
+        st.plotly_chart(fig, use_container_width=True)
+
         hist_df = fetch_historical_mf_data()
         if not hist_df.empty:
-            fig2 = px.line(hist_df, x="Date", y="Normalized", color="Fund", template="plotly_dark")
+            fig2 = px.line(hist_df, x="Date", y="Normalized", color="Fund", template="plotly_dark", title="30-Day Historical NAV Performance (Normalized to 100)")
             st.plotly_chart(fig2, use_container_width=True)
-            
+
     with t2:
-        selected_fund = st.selectbox("Select Fund:", list(funds.keys()))
+        st.caption("Cross-fund fundamental comparison based on portfolio weighted metrics from institutional equity analysts.")
+        st.dataframe(
+            peer_df.style.format({
+                "Weighted P/E": "{:.1f}x",
+                "Weighted P/B": "{:.2f}x",
+                "Weighted ROE (%)": "{:.2f}%",
+                "Target Fair Upside (%)": "{:.2f}%",
+                "Valuation Coverage (%)": "{:.1f}%"
+            }, na_rep="N/A").map(style_negative_positive, subset=["Target Fair Upside (%)"]),
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Weighted P/E": st.column_config.Column(help="Portfolio Price-to-Earnings Ratio. Lower indicates better relative value."),
+                "Weighted P/B": st.column_config.Column(help="Portfolio Price-to-Book Ratio."),
+                "Weighted ROE (%)": st.column_config.Column(help="Return on Equity: Measures the profitability and capital efficiency of the fund's underlying companies."),
+                "Target Fair Upside (%)": st.column_config.Column(help="Weighted upside potential to 12-month institutional analyst consensus target prices."),
+                "Valuation Coverage (%)": st.column_config.Column(help="Percentage of the portfolio that has active analyst price target coverage.")
+            }
+        )
+        
+        # Peer Comparison Chart
+        if not peer_df.empty:
+            fig_peer = px.bar(
+                peer_df, 
+                x="Fund", 
+                y="Target Fair Upside (%)", 
+                title="Consensus Intrinsic Target Upside Potential by Fund (%)", 
+                template="plotly_dark",
+                color="Target Fair Upside (%)",
+                color_continuous_scale="Blues"
+            )
+            st.plotly_chart(fig_peer, use_container_width=True)
+
+    with t3:
+        st.caption("Deep-dive into individual stock fair value targets, analyst price bands, and fundamental health ratios.")
+        selected_analysis_fund = st.selectbox("Select Fund to Analyze:", list(funds.keys()), key="fund_analysis_select")
+        fund_stocks = funds.get(selected_analysis_fund, {})
+        
+        if fund_stocks:
+            val_rows = []
+            for ticker, data in fund_stocks.items():
+                info = stock_info_dict.get(ticker, {})
+                f_stats = fundamentals_dict.get(ticker, {})
+                price = info.get("price", 0.0)
+                mean_t = f_stats.get("target_mean")
+                
+                upside = ((mean_t - price) / price) * 100 if (mean_t and price > 0) else None
+                
+                val_rows.append({
+                    "Stock": data["name"],
+                    "Current Price": price,
+                    "Target Mean": mean_t,
+                    "Target Low": f_stats.get("target_low"),
+                    "Target High": f_stats.get("target_high"),
+                    "Fair Upside (%)": upside,
+                    "P/E": f_stats.get("pe"),
+                    "P/B": f_stats.get("pb"),
+                    "ROE (%)": f_stats.get("roe")
+                })
+            
+            val_df = pd.DataFrame(val_rows).sort_values("Fair Upside (%)", ascending=False)
+            st.dataframe(
+                val_df.style.format({
+                    "Current Price": "₹{:.2f}",
+                    "Target Mean": "₹{:.2f}",
+                    "Target Low": "₹{:.2f}",
+                    "Target High": "₹{:.2f}",
+                    "Fair Upside (%)": "{:.2f}%",
+                    "P/E": "{:.1f}x",
+                    "P/B": "{:.2f}x",
+                    "ROE (%)": "{:.2f}%"
+                }, na_rep="N/A").map(style_negative_positive, subset=["Fair Upside (%)"]),
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Fair Upside (%)": st.column_config.Column(help="Potential return to institutional mean consensus fair value target."),
+                    "Target Low": st.column_config.Column(help="Conservative bear-case target price."),
+                    "Target High": st.column_config.Column(help="Optimistic bull-case target price.")
+                }
+            )
+
+    with t4:
+        selected_fund = st.selectbox("Select Fund for Portfolio Weighting:", list(funds.keys()), key="fund_breakdown_select")
         holdings_data = funds.get(selected_fund, {})
         if holdings_data:
             donut_data = [{"Stock": v["name"], "Weight": v["weight"]} for k, v in holdings_data.items()]
@@ -361,10 +511,8 @@ def main():
                 fig3 = px.pie(pd.DataFrame(donut_data), values='Weight', names='Stock', hole=0.4, template="plotly_dark")
                 fig3.update_traces(textposition='inside', textinfo='percent+label')
                 st.plotly_chart(fig3, use_container_width=True)
-            else:
-                st.info("No holdings data to display for this fund.")
 
-    # Detailed Holdings Table
+    # --- DETAILED HOLDINGS TABLE ---
     st.divider()
     st.subheader("🔍 Live Stock Impact Breakdown")
     cols = st.columns(len(funds) if funds else 1)
@@ -383,7 +531,6 @@ def main():
                     
                     display_change = float(val) if pd.notna(val) else 0.0
                     
-                    # Track Market Breadth
                     if display_change > 0: advancers += 1
                     elif display_change < 0: decliners += 1
                     
@@ -400,11 +547,9 @@ def main():
                 
                 st.caption(f"📈 Advancing: **{advancers}** | 📉 Declining: **{decliners}**", help="Market breadth indicator: Shows how many tracked stocks in this fund are currently trading positive vs negative.")
                 
-                # Sorted by Weight (Descending) by default
                 df_stocks = pd.DataFrame(rows).sort_values("Weight", ascending=False)
                 
                 if not df_stocks.empty:
-                    # Apply color styling to the individual stock tables
                     styled_stocks = df_stocks.style.format({
                         "Price": "₹{:.2f}", 
                         "Weight": "{:.1f}%", 
@@ -417,10 +562,10 @@ def main():
                         hide_index=True, 
                         use_container_width=True,
                         column_config={
-                            "Price": st.column_config.Column(help="The Last Traded Price (LTP) of the stock on the exchange."),
-                            "Weight": st.column_config.Column(help="The percentage of the fund's total assets invested in this specific stock."),
-                            "Live Change": st.column_config.Column(help="The real-time percentage change of the stock's price today."),
-                            "NAV Impact": st.column_config.Column(help="Calculated as (Weight × Live Change). Shows exactly how much this single stock's movement is dragging down or lifting up the entire fund's NAV today.")
+                            "Price": st.column_config.Column(help="The Last Traded Price (LTP) on the exchange."),
+                            "Weight": st.column_config.Column(help="The percentage allocation in the fund."),
+                            "Live Change": st.column_config.Column(help="The real-time percentage change today."),
+                            "NAV Impact": st.column_config.Column(help="Calculated as (Weight × Live Change). Net drag/lift on fund NAV today.")
                         }
                     )
                 else:
