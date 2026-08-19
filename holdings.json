@@ -1,22 +1,64 @@
 {
-    "HDFC Flexi Cap": {
-        "ICICIBANK.NS": 0.095, "HDFCBANK.NS": 0.075, "AXISBANK.NS": 0.065, "SBIN.NS": 0.055,
-        "KOTAKBANK.NS": 0.045, "BHARTIARTL.NS": 0.040, "LT.NS": 0.038, "CIPLA.NS": 0.035,
-        "HCLTECH.NS": 0.032, "RELIANCE.NS": 0.030, "INFY.NS": 0.028, "TCS.NS": 0.025,
-        "ITC.NS": 0.022, "BAJFINANCE.NS": 0.020, "NTPC.NS": 0.018, "SUNPHARMA.NS": 0.015,
-        "M&M.NS": 0.015, "TITAN.NS": 0.015, "ASIANPAINT.NS": 0.015, "TATASTEEL.NS": 0.015
+    "HDFC Flexi Cap Fund Direct Growth": {
+        "ICICIBANK.NS": {"name": "ICICI Bank", "weight": 0.0918},
+        "AXISBANK.NS": {"name": "Axis Bank", "weight": 0.0684},
+        "HDFCBANK.NS": {"name": "HDFC Bank", "weight": 0.0677},
+        "SBIN.NS": {"name": "State Bank of India", "weight": 0.0515},
+        "SBILIFE.NS": {"name": "SBI Life Insurance", "weight": 0.0410},
+        "LT.NS": {"name": "Larsen & Toubro", "weight": 0.0385},
+        "KOTAKBANK.NS": {"name": "Kotak Mahindra Bank", "weight": 0.0350},
+        "INDIGO.NS": {"name": "InterGlobe Aviation", "weight": 0.0320},
+        "MARUTI.NS": {"name": "Maruti Suzuki", "weight": 0.0285},
+        "BHARTIARTL.NS": {"name": "Bharti Airtel", "weight": 0.0250},
+        "CIPLA.NS": {"name": "Cipla", "weight": 0.0225},
+        "HCLTECH.NS": {"name": "HCL Technologies", "weight": 0.0210},
+        "RELIANCE.NS": {"name": "Reliance Industries", "weight": 0.0195},
+        "INFY.NS": {"name": "Infosys", "weight": 0.0180},
+        "TCS.NS": {"name": "TCS", "weight": 0.0165},
+        "ITC.NS": {"name": "ITC", "weight": 0.0150},
+        "NTPC.NS": {"name": "NTPC", "weight": 0.0145},
+        "SUNPHARMA.NS": {"name": "Sun Pharma", "weight": 0.0125},
+        "M&M.NS": {"name": "M&M", "weight": 0.0110}
     },
-    "Parag Parikh Flexi Cap": {
-        "HDFCBANK.NS": 0.090, "ITC.NS": 0.080, "POWERGRID.NS": 0.065, "ICICIBANK.NS": 0.060,
-        "BAJFINANCE.NS": 0.055, "MARUTI.NS": 0.050, "HCLTECH.NS": 0.045, "COALINDIA.NS": 0.040,
-        "CDSL.NS": 0.035, "RELIANCE.NS": 0.030, "GOOGL": 0.060, "MSFT": 0.050, "AMZN": 0.045,
-        "META": 0.040, "BAJAJ-AUTO.NS": 0.030, "HEROMOTOCO.NS": 0.025
+    "Parag Parikh Flexi Cap Fund Direct Growth": {
+        "HDFCBANK.NS": {"name": "HDFC Bank", "weight": 0.0788},
+        "POWERGRID.NS": {"name": "Power Grid Corp", "weight": 0.0641},
+        "ITC.NS": {"name": "ITC", "weight": 0.0584},
+        "COALINDIA.NS": {"name": "Coal India", "weight": 0.0566},
+        "ICICIBANK.NS": {"name": "ICICI Bank", "weight": 0.0511},
+        "GOOGL": {"name": "Alphabet Inc", "weight": 0.0483},
+        "BAJAJHLDNG.NS": {"name": "Bajaj Holdings", "weight": 0.0448},
+        "KOTAKBANK.NS": {"name": "Kotak Mahindra Bank", "weight": 0.0412},
+        "HCLTECH.NS": {"name": "HCL Technologies", "weight": 0.0360},
+        "M&M.NS": {"name": "M&M", "weight": 0.0345},
+        "BAJFINANCE.NS": {"name": "Bajaj Finance", "weight": 0.0310},
+        "MARUTI.NS": {"name": "Maruti Suzuki", "weight": 0.0285},
+        "CDSL.NS": {"name": "CDSL", "weight": 0.0255},
+        "MSFT": {"name": "Microsoft", "weight": 0.0240},
+        "AMZN": {"name": "Amazon", "weight": 0.0215},
+        "RELIANCE.NS": {"name": "Reliance Industries", "weight": 0.0190},
+        "META": {"name": "Meta Platforms", "weight": 0.0175},
+        "BAJAJ-AUTO.NS": {"name": "Bajaj Auto", "weight": 0.0150},
+        "HEROMOTOCO.NS": {"name": "Hero MotoCorp", "weight": 0.0120}
     },
-    "Helios Flexi Cap": {
-        "ADANIPORTS.NS": 0.0416, "HDFCBANK.NS": 0.0400, "ICICIBANK.NS": 0.0396, 
-        "RELIANCE.NS": 0.0303, "NTPC.NS": 0.0250, "SBIN.NS": 0.0240, "TCS.NS": 0.0210,
-        "INFY.NS": 0.0200, "LT.NS": 0.0180, "ITC.NS": 0.0150, "TRENT.NS": 0.0150,
-        "INDIGO.NS": 0.0150, "ZOMATO.NS": 0.0150, "HAL.NS": 0.0120, "POLICYBZR.NS": 0.0100,
-        "SWIGGY.NS": 0.0063
+    "Helios Flexi Cap Fund Direct Growth": {
+        "ADANIPORTS.NS": {"name": "Adani Ports", "weight": 0.0416},
+        "HDFCBANK.NS": {"name": "HDFC Bank", "weight": 0.0400},
+        "ICICIBANK.NS": {"name": "ICICI Bank", "weight": 0.0396},
+        "RELIANCE.NS": {"name": "Reliance Industries", "weight": 0.0303},
+        "NTPC.NS": {"name": "NTPC", "weight": 0.0250},
+        "SBIN.NS": {"name": "State Bank of India", "weight": 0.0240},
+        "TCS.NS": {"name": "TCS", "weight": 0.0210},
+        "INFY.NS": {"name": "Infosys", "weight": 0.0200},
+        "LT.NS": {"name": "Larsen & Toubro", "weight": 0.0180},
+        "ITC.NS": {"name": "ITC", "weight": 0.0150},
+        "TRENT.NS": {"name": "Trent", "weight": 0.0150},
+        "INDIGO.NS": {"name": "InterGlobe Aviation", "weight": 0.0150},
+        "ZOMATO.NS": {"name": "Zomato", "weight": 0.0150},
+        "HAL.NS": {"name": "HAL", "weight": 0.0120},
+        "POLICYBZR.NS": {"name": "PB Fintech", "weight": 0.0100},
+        "ADANIENT.NS": {"name": "Adani Enterprises", "weight": 0.0237},
+        "DIXON.NS": {"name": "Dixon Tech", "weight": 0.0204},
+        "CAMS.NS": {"name": "CAMS", "weight": 0.0053}
     }
 }
