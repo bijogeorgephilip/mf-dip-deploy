@@ -4,6 +4,7 @@ import plotly.express as px
 from datetime import datetime
 import pytz
 import requests
+import cloudscraper
 import time
 import json
 import re
@@ -29,12 +30,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- BROWSER HEADERS (To prevent anti-bot blocking) ---
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-}
+# --- Initialize Cloudscraper Globally ---
+scraper = cloudscraper.create_scraper()
 
 # --- OFFICIAL AMFI SCHEME CODES ---
 mf_amfi_codes = {
@@ -79,7 +76,7 @@ def load_holdings():
 
 funds = load_holdings()
 
-# --- 100% GROWW-NATIVE SCRAPER (Replaces Yahoo Finance) ---
+# --- 100% GROWW-NATIVE SCRAPER (Cloudscraper Patched) ---
 @st.cache_data(ttl=60)
 def fetch_groww_index_data():
     indices = {"NIFTY 50": "nifty-50", "SENSEX": "sensex"}
@@ -88,7 +85,8 @@ def fetch_groww_index_data():
     for name, slug in indices.items():
         try:
             url = f"https://groww.in/indices/{slug}"
-            res = requests.get(url, headers=HEADERS, timeout=5)
+            # Using cloudscraper to bypass anti-bot walls
+            res = scraper.get(url, timeout=10)
             
             # Scrape the background JSON injected by Groww
             change_match = re.search(r'"dayChangePerc":\s*([-\d\.]+)', res.text)
@@ -113,7 +111,8 @@ def fetch_groww_live_stocks(slugs):
     def scrape_stock(slug):
         url = f"https://groww.in/stocks/{slug}"
         try:
-            res = requests.get(url, headers=HEADERS, timeout=5)
+            # Using cloudscraper to bypass anti-bot walls
+            res = scraper.get(url, timeout=10)
             match = re.search(r'"dayChangePerc":\s*([-\d\.]+)', res.text)
             if match:
                 return slug, float(match.group(1))
@@ -130,7 +129,7 @@ def fetch_groww_live_stocks(slugs):
     changes["_status"] = "ok" if any(v is not None for v in changes.values()) else "failed"
     return changes
 
-# --- EXISTING AMFI NAV LOGIC ---
+# --- EXISTING AMFI NAV LOGIC (Remains purely requests-based) ---
 @st.cache_data(ttl=3600)
 def fetch_amfi_scheme_data(code):
     url = f"https://api.mfapi.in/mf/{code}"
@@ -210,7 +209,7 @@ def compute_fund_summary():
 # --- DASHBOARD UI ---
 def main():
     st.title("📉 MF Dip Analyzer Pro (Groww Native)")
-    st.caption("100% Yahoo-Free. Multi-threaded live scraping directly from Groww endpoints.")
+    st.caption("100% Yahoo-Free. Multi-threaded live scraping directly from Groww endpoints using Cloudscraper.")
 
     if st.button("Refresh data"):
         st.cache_data.clear()
