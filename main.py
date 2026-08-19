@@ -67,14 +67,22 @@ funds = {
         "GODREJCP.NS": 0.015, "UBL.NS": 0.010,
     },
     "Helios Flexi Cap": {
-        "ICICIBANK.NS": 0.080, "HDFCBANK.NS": 0.070, "SBIN.NS": 0.060, "RELIANCE.NS": 0.055,
-        "LT.NS": 0.050, "ITC.NS": 0.045, "INFY.NS": 0.040, "TCS.NS": 0.035, "AXISBANK.NS": 0.030,
-        "PAYTM.NS": 0.025, "TRENT.NS": 0.025, "INDIGO.NS": 0.025, "DIXON.NS": 0.025,
-        "HAL.NS": 0.025, "BEL.NS": 0.025, "SWIGGY.NS": 0.020, "ZYDUSLIFE.NS": 0.020,
-        "APOLLOHOSP.NS": 0.020, "MAXHEALTH.NS": 0.020, "POLYCAB.NS": 0.020, "KPITTECH.NS": 0.020,
-        "TATAELXSI.NS": 0.020, "CYIENT.NS": 0.015, "PERSISTENT.NS": 0.015, "COFORGE.NS": 0.015,
-        "TATACHEM.NS": 0.015, "SONACOMS.NS": 0.015, "CGPOWER.NS": 0.015, "KALYANKJIL.NS": 0.015,
-        "DEVYANI.NS": 0.010, "SUZLON.NS": 0.010, "BSE.NS": 0.010, "MCX.NS": 0.010, "POLICYBZR.NS": 0.010,
+        "ADANIPORTS.NS": 0.0416, 
+        "HDFCBANK.NS": 0.0400, 
+        "ICICIBANK.NS": 0.0396, 
+        "RELIANCE.NS": 0.0303,
+        "NTPC.NS": 0.0250,
+        "SBIN.NS": 0.0240,
+        "TCS.NS": 0.0210,
+        "INFY.NS": 0.0200,
+        "LT.NS": 0.0180,
+        "ITC.NS": 0.0150,
+        "TRENT.NS": 0.0150,
+        "INDIGO.NS": 0.0150,
+        "ZOMATO.NS": 0.0150,
+        "HAL.NS": 0.0120,
+        "POLICYBZR.NS": 0.0100,
+        "SWIGGY.NS": 0.0063, 
     },
 }
 
@@ -132,14 +140,12 @@ def fetch_index_data():
 def fetch_live_data(tickers):
     changes = {}
     
-    # Let yf.download handle valid/invalid automatically to avoid rate limit spam
     valid_tickers = [t for t in tickers if t and t != "CASH" and t not in INVALID_YF_TICKERS]
 
     if not valid_tickers:
         return {"CASH": 0.0, "_status": "no_valid_tickers"}
 
     try:
-        # Increase period to 5d to handle weekends and market holidays
         data = yf.download(valid_tickers, period="5d", progress=False, auto_adjust=True)
         if data.empty:
             raise ValueError("Empty Yahoo Finance response")
@@ -148,7 +154,6 @@ def fetch_live_data(tickers):
         
         for ticker in valid_tickers:
             try:
-                # Bypass missing keys efficiently
                 if ticker not in close_data.columns:
                     changes[ticker] = None
                     continue
@@ -214,7 +219,6 @@ def fetch_historical_mf_data(period):
             if df.empty:
                 continue
 
-            # Anchor to the actual latest date in the AMFI data instead of system clock
             max_date = df["date"].max()
             cutoff_date = max_date - pd.Timedelta(days=days_to_fetch)
             
@@ -291,7 +295,15 @@ def compute_fund_summary():
         fund_nav = nav_snapshot.get("nav")
         nav_change = nav_snapshot.get("change")
 
-        signal = "Buy" if valid_components and weighted_impact < -0.5 else "Hold Cash"
+        # --- ADVANCED TIERED DEPLOYMENT LOGIC ---
+        if not valid_components:
+            signal = "Hold Cash"
+        elif weighted_impact <= -0.50:
+            signal = "Strong Buy"
+        elif weighted_impact <= -0.25:
+            signal = "Medium Buy"
+        else:
+            signal = "Hold Cash"
 
         rows.append({
             "Fund": fund_name,
@@ -348,13 +360,21 @@ def main():
 
     st.subheader("Fund comparison")
     chart_df = summary.copy()
-    chart_df["Signal Color"] = chart_df["Signal"].map({"Buy": "#f23645", "Hold Cash": "#38bdf8"})
+    
+    # --- UPDATED COLOR MAPPING FOR ADVANCED SIGNALS ---
+    color_map = {
+        "Strong Buy": "#f23645",   # Red for deep dips
+        "Medium Buy": "#f59e0b",   # Amber/Orange for moderate dips
+        "Hold Cash": "#38bdf8"     # Blue for flat/positive days
+    }
+    
+    chart_df["Signal Color"] = chart_df["Signal"].map(color_map)
     fig = px.bar(
         chart_df,
         x="Fund",
         y="Weighted Impact",
         color="Signal",
-        color_discrete_map={"Buy": "#f23645", "Hold Cash": "#38bdf8"},
+        color_discrete_map=color_map,
         title="Weighted market impact by fund",
     )
     fig.update_layout(xaxis_title="Fund", yaxis_title="Impact (%)", template="plotly_dark")
@@ -379,7 +399,7 @@ def main():
             """
         )
 
-    # --- RESTORED & UPGRADED: HISTORICAL NAV TRACKER & DONUT CHART ---
+    # --- HISTORICAL NAV TRACKER & DONUT CHART ---
     st.divider()
     st.subheader("📊 Advanced Analytics")
     
@@ -453,7 +473,7 @@ def main():
                         "Stock": ticker.replace(".NS", ""),
                         "Weight": weight * 100,
                         "Live Change": val,
-                        "NAV Impact": impact  # Renamed for better clarity
+                        "NAV Impact": impact
                     })
                 
                 df_stocks = pd.DataFrame(stock_rows).sort_values("NAV Impact", ascending=True)
@@ -467,7 +487,6 @@ def main():
                     use_container_width=True, 
                     hide_index=True
                 )
-
 
 if __name__ == "__main__":
     main()
