@@ -1,5 +1,4 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import plotly.express as px
 from datetime import datetime
@@ -7,7 +6,8 @@ import pytz
 import requests
 import time
 import json
-import os
+import re
+import concurrent.futures
 
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="MF Dip Analyzer Pro", page_icon="📉", layout="wide")
@@ -16,15 +16,7 @@ st.set_page_config(page_title="MF Dip Analyzer Pro", page_icon="📉", layout="w
 st.markdown(
     """
     <style>
-    .stApp {
-        background-color: #0b0e14;
-        background-image:
-            linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-        background-size: 30px 30px;
-        color: #e2e8f0;
-        font-family: 'Inter', sans-serif;
-    }
+    .stApp { background-color: #0b0e14; background-image: linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px); background-size: 30px 30px; color: #e2e8f0; font-family: 'Inter', sans-serif; }
     h1, h2, h3 { color: #f8fafc !important; font-weight: 600; text-shadow: 0px 2px 4px rgba(0,0,0,0.5); }
     div[data-testid="stMetricValue"] { color: #ffffff; font-size: 2.2rem; font-weight: 700; }
     div[data-testid="stMetricDelta"] { font-size: 1.2rem; font-weight: 600; }
@@ -32,221 +24,124 @@ st.markdown(
     .stTabs [data-baseweb="tab"] { height: 50px; color: #64748b; font-size: 1.1rem; border-bottom: 2px solid transparent; }
     .stTabs [aria-selected="true"] { color: #e2e8f0 !important; border-bottom: 2px solid #38bdf8 !important; }
     .stDataFrame { background-color: rgba(30, 41, 59, 0.85); border-radius: 8px; padding: 10px; border: 1px solid #334155; }
-    .stButton>button { background-color: #2563eb; color: #ffffff; border-radius: 4px; font-weight: 600; border: 1px solid #1d4ed8; padding: 0.5rem 1.5rem; transition: all 0.2s ease; text-transform: uppercase; letter-spacing: 0.5px; }
-    .stButton>button:hover { background-color: #1d4ed8; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4); }
-    .stTextInput>div>div>input { background-color: rgba(30, 41, 59, 0.8); color: #f8fafc; border: 1px solid #475569; border-radius: 4px; }
-    .fund-card { background-color: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 20px; text-align: center; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3); }
-    .fund-title { font-size: 1.2rem; color: #94a3b8; margin-bottom: 10px; font-weight: 600; }
-    .fund-val-red { font-size: 2rem; color: #f23645; font-weight: 700; }
-    .fund-val-green { font-size: 2rem; color: #089981; font-weight: 700; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# --- MUTUAL FUND PORTFOLIO DATA (LOADED DYNAMICALLY) ---
-@st.cache_data(ttl=3600) # Caches the JSON so it doesn't read the file on every single click
-def load_holdings():
-    try:
-        with open("holdings.json", "r") as file:
-            return json.load(file)
-    except FileNotFoundError:
-        st.error("Holdings file not found. Please ensure holdings.json exists.")
-        return {}
-
-funds = load_holdings()
-
-# --- OFFICIAL AMFI SCHEME CODES (Direct Growth Plans) ---
+# --- OFFICIAL AMFI SCHEME CODES ---
 mf_amfi_codes = {
     "HDFC Flexi Cap Fund Direct Growth": "118955",
     "Parag Parikh Flexi Cap Fund Direct Growth": "122639",
     "Helios Flexi Cap Fund Direct Growth": "152135",
 }
 
-INVALID_YF_TICKERS = {
-    "ZOMATO.NS",
-    "MCDOWELL-N.NS",
-    "TATAMOTORS.NS",
-    "PAYTM.NS",
-    "SWIGGY.NS",
-    "MCX.NS",
-    "POLICYBZR.NS",
-    "KALYANKJIL.NS",
-}
+@st.cache_data(ttl=3600)
+def load_holdings():
+    try:
+        with open("holdings.json", "r") as file:
+            return json.load(file)
+    except FileNotFoundError:
+        st.error("Holdings file not found. Please run update_holdings.py first.")
+        return {}
 
-def sanitize_portfolio_tickers(portfolio):
-    sanitized = {}
-    for fund_name, holdings in portfolio.items():
-        cleaned = {ticker: weight for ticker, weight in holdings.items() if ticker and ticker not in INVALID_YF_TICKERS}
-        if cleaned:
-            sanitized[fund_name] = cleaned
-    return sanitized
+funds = load_holdings()
 
-funds = sanitize_portfolio_tickers(funds)
-
+# --- 100% GROWW-NATIVE SCRAPER (Replaces Yahoo Finance) ---
 @st.cache_data(ttl=60)
-def fetch_index_data():
-    indices = {"NIFTY 50": "^NSEI", "SENSEX": "^BSESN"}
+def fetch_groww_index_data():
+    indices = {"NIFTY 50": "nifty-50", "SENSEX": "sensex"}
     data = {}
-    for name, ticker in indices.items():
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    
+    for name, slug in indices.items():
         try:
-            hist = yf.Ticker(ticker).history(period="2d")
-            if len(hist) >= 2:
-                prev, curr = hist["Close"].iloc[-2], hist["Close"].iloc[-1]
-                if prev and curr:
-                    data[name] = {
-                        "value": float(curr),
-                        "change": ((curr - prev) / prev) * 100,
-                        "ok": True,
-                    }
-                    continue
+            url = f"https://groww.in/indices/{slug}"
+            res = requests.get(url, headers=headers, timeout=5)
+            # Scrape the background JSON injected by Groww
+            change_match = re.search(r'"dayChangePerc":\s*([-\d\.]+)', res.text)
+            val_match = re.search(r'"livePrice":\s*([-\d\.]+)', res.text)
+            
+            change = float(change_match.group(1)) if change_match else 0.0
+            value = float(val_match.group(1)) if val_match else 0.0
+            data[name] = {"value": value, "change": change, "ok": True}
         except Exception:
-            pass
-
-        data[name] = {"value": None, "change": None, "ok": False}
+            data[name] = {"value": None, "change": None, "ok": False}
     return data
 
 @st.cache_data(ttl=60)
-def fetch_live_data(tickers):
+def fetch_groww_live_stocks(slugs):
     changes = {}
-    
-    valid_tickers = [t for t in tickers if t and t != "CASH" and t not in INVALID_YF_TICKERS]
+    valid_slugs = [s for s in slugs if s]
 
-    if not valid_tickers:
-        return {"CASH": 0.0, "_status": "no_valid_tickers"}
+    def scrape_stock(slug):
+        url = f"https://groww.in/stocks/{slug}"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        try:
+            res = requests.get(url, headers=headers, timeout=5)
+            # Scrape the dayChange percentage directly from the HTML source
+            match = re.search(r'"dayChangePerc":\s*([-\d\.]+)', res.text)
+            if match:
+                return slug, float(match.group(1))
+        except:
+            pass
+        return slug, None
 
-    try:
-        data = yf.download(valid_tickers, period="5d", progress=False, auto_adjust=True)
-        if data.empty:
-            raise ValueError("Empty Yahoo Finance response")
+    # Multi-threading: Fetches 10 stocks simultaneously instead of 1 by 1
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        results = executor.map(scrape_stock, valid_slugs)
 
-        close_data = data["Close"] if len(valid_tickers) > 1 else data["Close"].to_frame(name=valid_tickers[0])
-        
-        for ticker in valid_tickers:
-            try:
-                if ticker not in close_data.columns:
-                    changes[ticker] = None
-                    continue
-                
-                hist = close_data[ticker].dropna()
-                if len(hist) >= 2:
-                    prev, curr = hist.iloc[-2], hist.iloc[-1]
-                    changes[ticker] = ((curr - prev) / prev) * 100 if prev else 0.0
-                else:
-                    changes[ticker] = None
-            except Exception:
-                changes[ticker] = None
-    except Exception:
-        for ticker in valid_tickers:
-            changes[ticker] = None
+    for slug, change in results:
+        changes[slug] = change
 
-    changes["CASH"] = 0.0
     changes["_status"] = "ok" if any(v is not None for v in changes.values()) else "failed"
     return changes
 
+# --- EXISTING AMFI NAV LOGIC ---
 @st.cache_data(ttl=3600)
 def fetch_amfi_scheme_data(code):
-    """Fetch and normalize a single AMFI fund series into a date/nav DataFrame."""
     url = f"https://api.mfapi.in/mf/{code}"
-    for attempt in range(3):
-        try:
-            response = requests.get(url, timeout=20)
-            response.raise_for_status()
-            payload = response.json()
-
-            if not isinstance(payload, dict):
-                return pd.DataFrame()
-
-            raw_data = payload.get("data", [])
-            if not isinstance(raw_data, list):
-                return pd.DataFrame()
-
-            df = pd.DataFrame(raw_data)
-            if df.empty or "date" not in df.columns or "nav" not in df.columns:
-                return pd.DataFrame()
-
-            df = df[["date", "nav"]].copy()
-            df["date"] = pd.to_datetime(df["date"], format="%d-%m-%Y", dayfirst=True, errors="coerce")
-            df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
-            df = df.dropna(subset=["date", "nav"]).sort_values("date").reset_index(drop=True)
-            return df if not df.empty else pd.DataFrame()
-        except (requests.RequestException, ValueError, TypeError):
-            if attempt < 2:
-                time.sleep(0.5 * (attempt + 1))
-                continue
-            return pd.DataFrame()
-
-    return pd.DataFrame()
-
-@st.cache_data(ttl=3600)
-def fetch_historical_mf_data(period):
-    df_list = []
-    days_to_fetch = {"1mo": 30, "3mo": 90, "1y": 365, "5y": 1825}.get(period, 30)
-
-    for name, code in mf_amfi_codes.items():
-        try:
-            df = fetch_amfi_scheme_data(code)
-            if df.empty:
-                continue
-
-            max_date = df["date"].max()
-            cutoff_date = max_date - pd.Timedelta(days=days_to_fetch)
-            
-            df = df[df["date"] >= cutoff_date]
-            if df.empty:
-                continue
-
-            df = df.copy()
-            df["Normalized"] = (df["nav"] / df["nav"].iloc[0]) * 100
-            df["Fund"] = name
-            df = df.rename(columns={"date": "Date"})
-            df_list.append(df[["Date", "Normalized", "Fund"]])
-        except Exception:
-            continue
-
-    if df_list:
-        return pd.concat(df_list, ignore_index=True)
+    try:
+        res = requests.get(url, timeout=10).json()
+        df = pd.DataFrame(res.get("data", []))
+        if not df.empty:
+            df["date"] = pd.to_datetime(df["date"], format="%d-%m-%Y")
+            df["nav"] = pd.to_numeric(df["nav"])
+            return df.sort_values("date").reset_index(drop=True)
+    except:
+        pass
     return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def fetch_amfi_eod_data():
-    eod_data = {}
+    eod = {}
     for name, code in mf_amfi_codes.items():
-        try:
-            df = fetch_amfi_scheme_data(code)
-            if df.empty or len(df) < 2:
-                eod_data[name] = {"nav": None, "change": None, "date": None, "ok": False}
-                continue
+        df = fetch_amfi_scheme_data(code)
+        if not df.empty and len(df) >= 2:
+            latest, prev = df.iloc[-1]["nav"], df.iloc[-2]["nav"]
+            eod[name] = {"nav": latest, "change": ((latest - prev) / prev) * 100}
+        else:
+            eod[name] = {"nav": None, "change": None}
+    return eod
 
-            latest_row = df.iloc[-1]
-            prev_row = df.iloc[-2]
-            latest_nav = safe_float(latest_row["nav"])
-            prev_nav = safe_float(prev_row["nav"])
+@st.cache_data(ttl=3600)
+def fetch_historical_mf_data(period="1mo"):
+    df_list = []
+    for name, code in mf_amfi_codes.items():
+        df = fetch_amfi_scheme_data(code)
+        if not df.empty:
+            cutoff = df["date"].max() - pd.Timedelta(days=30)
+            df = df[df["date"] >= cutoff].copy()
+            df["Normalized"] = (df["nav"] / df["nav"].iloc[0]) * 100
+            df["Fund"] = name
+            df_list.append(df.rename(columns={"date": "Date"}))
+    return pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
 
-            if prev_nav == 0:
-                change = None
-            else:
-                change = ((latest_nav - prev_nav) / prev_nav) * 100
-
-            eod_data[name] = {
-                "nav": latest_nav,
-                "change": change,
-                "date": latest_row["date"].strftime("%d-%b-%Y"),
-                "ok": True,
-            }
-        except Exception:
-            eod_data[name] = {"nav": None, "change": None, "date": None, "ok": False}
-    return eod_data
-
-def safe_float(value, default=0.0):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
+# --- COMPUTATION ENGINE ---
 def compute_fund_summary():
-    market = fetch_index_data()
-    live_changes = fetch_live_data([ticker for holdings in funds.values() for ticker in holdings.keys()])
+    market = fetch_groww_index_data()
+    all_slugs = list(set(slug for holdings in funds.values() for slug in holdings.keys()))
+    live_changes = fetch_groww_live_stocks(all_slugs)
     amfi = fetch_amfi_eod_data()
 
     rows = []
@@ -254,208 +149,103 @@ def compute_fund_summary():
         weighted_impact = 0.0
         valid_components = 0
 
-        for ticker, weight in holdings.items():
-            change = live_changes.get(ticker)
-            if change is None:
-                continue
-            weighted_impact += weight * float(change)
-            valid_components += 1
+        for slug, data in holdings.items():
+            change = live_changes.get(slug)
+            if change is not None:
+                weighted_impact += data["weight"] * float(change)
+                valid_components += 1
 
-        nav_snapshot = amfi.get(fund_name, {})
-        fund_nav = nav_snapshot.get("nav")
-        nav_change = nav_snapshot.get("change")
-
-        # --- ADVANCED TIERED DEPLOYMENT LOGIC ---
-        if not valid_components:
-            signal = "Hold Cash"
-        elif weighted_impact <= -0.50:
-            signal = "Strong Buy"
-        elif weighted_impact <= -0.25:
-            signal = "Medium Buy"
-        else:
-            signal = "Hold Cash"
+        nav_data = amfi.get(fund_name, {})
+        
+        if not valid_components: signal = "Hold Cash"
+        elif weighted_impact <= -0.50: signal = "Strong Buy"
+        elif weighted_impact <= -0.25: signal = "Medium Buy"
+        else: signal = "Hold Cash"
 
         rows.append({
             "Fund": fund_name,
             "Weighted Impact": round(weighted_impact, 2) if valid_components else None,
-            "NAV": round(fund_nav, 3) if fund_nav is not None else None,
-            "NAV Change": round(nav_change, 2) if nav_change is not None else None,
+            "NAV": round(nav_data.get("nav", 0), 3) if nav_data.get("nav") else None,
+            "NAV Change": round(nav_data.get("change", 0), 2) if nav_data.get("change") else None,
             "Signal": signal,
         })
 
-    summary = pd.DataFrame(rows).sort_values("Weighted Impact", ascending=True, na_position="last")
-    recommendation = summary.iloc[0] if not summary.empty else None
-    
-    return market, summary, recommendation, live_changes
+    summary = pd.DataFrame(rows).sort_values("Weighted Impact", ascending=True)
+    rec = summary.iloc[0] if not summary.empty else None
+    return market, summary, rec, live_changes
 
+# --- DASHBOARD UI ---
 def main():
-    st.title("📉 MF Dip Analyzer Pro")
-    st.caption("Entry logic for flexi-cap deployment based on weighted market dip exposure.")
+    st.title("📉 MF Dip Analyzer Pro (Groww Native)")
+    st.caption("100% Yahoo-Free. Multi-threaded live scraping directly from Groww endpoints.")
 
     if st.button("Refresh data"):
         st.cache_data.clear()
 
-    market, summary, recommendation, live_changes = compute_fund_summary()
+    market, summary, rec, live_changes = compute_fund_summary()
 
-    has_market_data = any(item.get("ok", False) for item in market.values()) if market else False
-    if not has_market_data:
-        st.warning("Market data is temporarily unavailable. Yahoo Finance is not responding right now.")
-        st.stop()
-
-    nifty = market.get("NIFTY 50", {"value": None, "change": None})
-    sensex = market.get("SENSEX", {"value": None, "change": None})
+    if not market or not market.get("NIFTY 50", {}).get("ok"):
+        st.warning("Market data temporarily unavailable from Groww.")
 
     c1, c2, c3 = st.columns(3)
-    with c1:
-        if nifty["value"] is None:
-            st.metric("NIFTY 50", "N/A", "N/A")
-        else:
-            st.metric("NIFTY 50", f"₹{nifty['value']:,.2f}", f"{nifty['change']:.2f}%")
-    with c2:
-        if sensex["value"] is None:
-            st.metric("SENSEX", "N/A", "N/A")
-        else:
-            st.metric("SENSEX", f"₹{sensex['value']:,.2f}", f"{sensex['change']:.2f}%")
-    with c3:
-        if recommendation is not None and recommendation["Weighted Impact"] is not None:
-            st.metric("Deployment Signal", recommendation["Signal"], f"{recommendation['Weighted Impact']:.2f}%")
-        else:
-            st.metric("Deployment Signal", "Hold Cash", "0.00%")
+    nifty, sensex = market.get("NIFTY 50", {}), market.get("SENSEX", {})
+    
+    c1.metric("NIFTY 50", f"₹{nifty.get('value', 0):,.2f}", f"{nifty.get('change', 0):.2f}%")
+    c2.metric("SENSEX", f"₹{sensex.get('value', 0):,.2f}", f"{sensex.get('change', 0):.2f}%")
+    
+    if rec is not None:
+        c3.metric("Deployment Signal", rec["Signal"], f"{rec['Weighted Impact']:.2f}%")
+        st.info(f"Top Opportunity: **{rec['Fund']}** | Action: **{rec['Signal']}**")
 
-    if recommendation is not None and recommendation["Weighted Impact"] is not None:
-        st.info(
-            f"Best opportunity: **{recommendation['Fund']}** with a weighted impact of {recommendation['Weighted Impact']:.2f}% — "
-            f"recommended action: **{recommendation['Signal']}**."
-        )
-
-    st.subheader("Fund comparison")
+    # Bar Chart
     chart_df = summary.copy()
-    
-    # --- UPDATED COLOR MAPPING FOR ADVANCED SIGNALS ---
-    color_map = {
-        "Strong Buy": "#f23645",   # Red for deep dips
-        "Medium Buy": "#f59e0b",   # Amber/Orange for moderate dips
-        "Hold Cash": "#38bdf8"     # Blue for flat/positive days
-    }
-    
-    chart_df["Signal Color"] = chart_df["Signal"].map(color_map)
-    fig = px.bar(
-        chart_df,
-        x="Fund",
-        y="Weighted Impact",
-        color="Signal",
-        color_discrete_map=color_map,
-        title="Weighted market impact by fund",
-    )
-    fig.update_layout(xaxis_title="Fund", yaxis_title="Impact (%)", template="plotly_dark")
+    cmap = {"Strong Buy": "#f23645", "Medium Buy": "#f59e0b", "Hold Cash": "#38bdf8"}
+    fig = px.bar(chart_df, x="Fund", y="Weighted Impact", color="Signal", color_discrete_map=cmap)
+    fig.update_layout(template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("Live fund snapshot")
-    display_df = summary[["Fund", "Weighted Impact", "NAV", "NAV Change", "Signal"]].copy()
-    display_df = display_df.rename(
-        columns={
-            "Weighted Impact": "Weighted impact (%)",
-            "NAV": "NAV",
-            "NAV Change": "NAV change (%)",
-        }
-    )
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-    with st.expander("Portfolio logic"):
-        st.markdown(
-            """
-            This dashboard compares the live weighted movement of the underlying stocks inside each flexi-cap portfolio.
-            The fund with the most negative weighted impact is highlighted as the current deployment candidate.
-            """
-        )
-
-    # --- HISTORICAL NAV TRACKER & DONUT CHART ---
+    # Analytics Tabs
     st.divider()
     st.subheader("📊 Advanced Analytics")
+    t1, t2 = st.tabs(["Historical NAV", "Holdings Breakdown"])
     
-    tab1, tab2 = st.tabs(["Historical NAV Performance", "Fund Holdings Breakdown (Donut)"])
-    
-    # 1. Historical NAV Line Chart
-    with tab1:
-        st.caption("Tracking normalized NAV performance over the last 30 days.")
-        hist_data = fetch_historical_mf_data("1mo")
-        
-        if not hist_data.empty:
-            fig_line = px.line(
-                hist_data,
-                x="Date",
-                y="Normalized",
-                color="Fund",
-                title="30-Day Normalized NAV Trend (Base 100)",
-                template="plotly_dark"
-            )
-            fig_line.update_layout(hovermode="x unified", xaxis_title="", yaxis_title="Normalized NAV")
-            st.plotly_chart(fig_line, use_container_width=True)
-        else:
-            st.warning("Historical NAV data is currently unavailable.")
-
-    # 2. Donut Chart with Dropdown Selection
-    with tab2:
-        st.caption("View the exact stock weightages inside your Flexi Cap funds.")
-        
-        # Default the dropdown to the recommended fund if available
-        fund_names = list(funds.keys())
-        default_idx = 0
-        if recommendation is not None and recommendation["Fund"] in fund_names:
-            default_idx = fund_names.index(recommendation["Fund"])
+    with t1:
+        hist_df = fetch_historical_mf_data()
+        if not hist_df.empty:
+            fig2 = px.line(hist_df, x="Date", y="Normalized", color="Fund", template="plotly_dark")
+            st.plotly_chart(fig2, use_container_width=True)
             
-        selected_fund = st.selectbox("Select Fund to view allocation:", fund_names, index=default_idx)
-        
-        rec_holdings = funds.get(selected_fund, {})
-        if rec_holdings:
-            donut_df = pd.DataFrame(list(rec_holdings.items()), columns=["Stock", "Weight"])
-            donut_df["Stock"] = donut_df["Stock"].str.replace(".NS", "")
-            
-            fig_donut = px.pie(
-                donut_df, 
-                values='Weight', 
-                names='Stock', 
-                hole=0.4,
-                title=f"{selected_fund} Allocation",
-                template="plotly_dark"
-            )
-            fig_donut.update_traces(textposition='inside', textinfo='percent+label')
-            st.plotly_chart(fig_donut, use_container_width=True)
-        else:
-            st.info("No holdings data available to generate donut chart.")
+    with t2:
+        selected_fund = st.selectbox("Select Fund:", list(funds.keys()))
+        holdings_data = funds.get(selected_fund, {})
+        if holdings_data:
+            donut_data = [{"Stock": v["name"], "Weight": v["weight"]} for k, v in holdings_data.items()]
+            fig3 = px.pie(pd.DataFrame(donut_data), values='Weight', names='Stock', hole=0.4, template="plotly_dark")
+            fig3.update_traces(textposition='inside', textinfo='percent+label')
+            st.plotly_chart(fig3, use_container_width=True)
 
-    # --- INDIVIDUAL HOLDINGS BREAKDOWN ---
+    # Detailed Holdings Table
     st.divider()
-    st.subheader("🔍 Individual Fund Holdings Breakdown")
-    
+    st.subheader("🔍 Live Impact Breakdown")
     cols = st.columns(len(funds))
     
     for idx, (fund_name, holdings) in enumerate(funds.items()):
         with cols[idx]:
-            with st.expander(f"{fund_name} Stocks", expanded=True):
-                stock_rows = []
-                for ticker, weight in holdings.items():
-                    val = live_changes.get(ticker)
-                    
-                    impact = (weight * val) if val is not None else 0.0
-                    
-                    stock_rows.append({
-                        "Stock": ticker.replace(".NS", ""),
-                        "Weight": weight * 100,
+            with st.expander(f"{fund_name}", expanded=True):
+                rows = []
+                for slug, data in holdings.items():
+                    val = live_changes.get(slug)
+                    rows.append({
+                        "Stock": data["name"],
+                        "Weight": data["weight"] * 100,
                         "Live Change": val,
-                        "NAV Impact": impact
+                        "NAV Impact": (data["weight"] * val) if val is not None else 0.0
                     })
                 
-                df_stocks = pd.DataFrame(stock_rows).sort_values("NAV Impact", ascending=True)
-                
+                df_stocks = pd.DataFrame(rows).sort_values("NAV Impact", ascending=True)
                 st.dataframe(
-                    df_stocks.style.format({
-                        "Weight": "{:.1f}%", 
-                        "Live Change": "{:.2f}%",
-                        "NAV Impact": "{:.3f}%"
-                    }, na_rep="N/A"), 
-                    use_container_width=True, 
-                    hide_index=True
+                    df_stocks.style.format({"Weight": "{:.1f}%", "Live Change": "{:.2f}%", "NAV Impact": "{:.3f}%"}, na_rep="N/A"), 
+                    hide_index=True, use_container_width=True
                 )
 
 if __name__ == "__main__":
