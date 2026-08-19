@@ -31,7 +31,6 @@ st.markdown(
 
 # --- OFFICIAL AMFI SCHEME CODES ---
 mf_amfi_codes = {
-    # Mapped to handle both the short names in your JSON and the official names
     "HDFC Flexi Cap": "118955",
     "Parag Parikh Flexi Cap": "122639",
     "Helios Flexi Cap": "152135",
@@ -83,7 +82,6 @@ def fetch_yahoo_index_data():
     for name, ticker in indices.items():
         try:
             tkr = yf.Ticker(ticker)
-            # Pull 5 days to guarantee we skip weekends/holidays safely
             hist = tkr.history(period="5d").dropna(subset=['Close'])
             
             if len(hist) >= 2:
@@ -106,14 +104,12 @@ def fetch_yahoo_live_stocks(tickers):
     def get_stock_change(ticker):
         try:
             tkr = yf.Ticker(ticker)
-            # Pull 5 days to guarantee we skip weekends/holidays safely
             hist = tkr.history(period="5d").dropna(subset=['Close'])
             if len(hist) >= 2:
                 prev_close = hist['Close'].iloc[-2]
                 latest = hist['Close'].iloc[-1]
                 change = ((latest - prev_close) / prev_close) * 100
                 
-                # Protect against NaN calculations
                 if pd.isna(change):
                     return ticker, None
                 return ticker, float(change)
@@ -152,9 +148,9 @@ def fetch_amfi_eod_data():
         df = fetch_amfi_scheme_data(code)
         if not df.empty and len(df) >= 2:
             latest, prev = df.iloc[-1]["nav"], df.iloc[-2]["nav"]
-            eod[name] = {"nav": latest, "change": ((latest - prev) / prev) * 100}
+            eod[name] = {"nav": latest, "change": ((latest - prev) / prev) * 100, "date": df.iloc[-1]["date"].strftime("%d-%m-%Y")}
         else:
-            eod[name] = {"nav": None, "change": None}
+            eod[name] = {"nav": None, "change": None, "date": "N/A"}
     return eod
 
 @st.cache_data(ttl=3600)
@@ -200,6 +196,7 @@ def compute_fund_summary():
             "Weighted Impact": round(weighted_impact, 2) if valid_components else 0.0,
             "NAV": round(nav_data.get("nav", 0), 3) if nav_data.get("nav") else None,
             "NAV Change": round(nav_data.get("change", 0), 2) if nav_data.get("change") else None,
+            "NAV Date": nav_data.get("date", "N/A"),
             "Signal": signal,
         })
 
@@ -210,7 +207,7 @@ def compute_fund_summary():
 # --- DASHBOARD UI ---
 def main():
     st.title("📉 MF Dip Analyzer Pro (yfinance Edition)")
-    st.caption("Powered by Yahoo Finance API. Instant institutional-grade fetching directly from official tickers.")
+    st.caption("Powered by Yahoo Finance API & AMFI Official NAV Endpoints.")
 
     if st.button("Refresh data"):
         st.cache_data.clear()
@@ -233,10 +230,21 @@ def main():
         c3.metric("Deployment Signal", rec["Signal"], impact_str)
         st.info(f"Top Opportunity: **{rec['Fund']}** | Action: **{rec['Signal']}**")
 
-    # Bar Chart (Updates dynamically based on positive/negative impacts)
-    chart_df = summary.copy()
+    # --- NEW: MUTUAL FUND NAV PERFORMANCE TABLE ---
+    st.divider()
+    st.subheader("📌 Mutual Fund NAV Overview (AMFI EOD)")
+    nav_table_df = summary[["Fund", "NAV", "NAV Change", "NAV Date", "Signal"]].copy()
+    nav_table_df = nav_table_df.drop_duplicates(subset=["Fund"]) # Clean duplicates if short/long names overlap
+    st.dataframe(
+        nav_table_df.style.format({"NAV": "₹{:.3f}", "NAV Change": "{:.2f}%"}, na_rep="N/A"),
+        hide_index=True, use_container_width=True
+    )
+
+    # Bar Chart
+    st.divider()
+    chart_df = summary.drop_duplicates(subset=["Fund"]).copy()
     cmap = {"Strong Buy": "#f23645", "Medium Buy": "#f59e0b", "Hold Cash": "#38bdf8"}
-    fig = px.bar(chart_df, x="Fund", y="Weighted Impact", color="Signal", color_discrete_map=cmap)
+    fig = px.bar(chart_df, x="Fund", y="Weighted Impact", color="Signal", color_discrete_map=cmap, title="Estimated Portfolio Impact Today")
     fig.update_layout(template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
@@ -265,7 +273,7 @@ def main():
 
     # Detailed Holdings Table
     st.divider()
-    st.subheader("🔍 Live Impact Breakdown")
+    st.subheader("🔍 Live Stock Impact Breakdown")
     cols = st.columns(len(funds) if funds else 1)
     
     for idx, (fund_name, holdings) in enumerate(funds.items()):
@@ -274,8 +282,6 @@ def main():
                 rows = []
                 for ticker, data in holdings.items():
                     val = live_changes.get(ticker)
-                    
-                    # Safely handle NaN and None 
                     display_change = float(val) if pd.notna(val) else 0.0
                     
                     if pd.isna(val):
