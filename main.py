@@ -31,6 +31,10 @@ st.markdown(
 
 # --- OFFICIAL AMFI SCHEME CODES ---
 mf_amfi_codes = {
+    # Mapped to handle both the short names in your JSON and the official names
+    "HDFC Flexi Cap": "118955",
+    "Parag Parikh Flexi Cap": "122639",
+    "Helios Flexi Cap": "152135",
     "HDFC Flexi Cap Fund Direct Growth": "118955",
     "Parag Parikh Flexi Cap Fund Direct Growth": "122639",
     "Helios Flexi Cap Fund Direct Growth": "152135",
@@ -79,13 +83,14 @@ def fetch_yahoo_index_data():
     for name, ticker in indices.items():
         try:
             tkr = yf.Ticker(ticker)
-            hist = tkr.history(period="2d")
+            # Pull 5 days to guarantee we skip weekends/holidays safely
+            hist = tkr.history(period="5d").dropna(subset=['Close'])
             
             if len(hist) >= 2:
                 prev_close = hist['Close'].iloc[-2]
                 latest = hist['Close'].iloc[-1]
                 change = ((latest - prev_close) / prev_close) * 100
-                data[name] = {"value": latest, "change": change, "ok": True}
+                data[name] = {"value": float(latest), "change": float(change), "ok": True}
             else:
                 data[name] = {"value": 0.0, "change": 0.0, "ok": False}
         except Exception:
@@ -101,12 +106,17 @@ def fetch_yahoo_live_stocks(tickers):
     def get_stock_change(ticker):
         try:
             tkr = yf.Ticker(ticker)
-            hist = tkr.history(period="2d")
+            # Pull 5 days to guarantee we skip weekends/holidays safely
+            hist = tkr.history(period="5d").dropna(subset=['Close'])
             if len(hist) >= 2:
                 prev_close = hist['Close'].iloc[-2]
                 latest = hist['Close'].iloc[-1]
                 change = ((latest - prev_close) / prev_close) * 100
-                return ticker, change
+                
+                # Protect against NaN calculations
+                if pd.isna(change):
+                    return ticker, None
+                return ticker, float(change)
         except:
             pass
         return ticker, None
@@ -174,7 +184,7 @@ def compute_fund_summary():
 
         for ticker, data in holdings.items():
             change = live_changes.get(ticker)
-            if change is not None:
+            if change is not None and pd.notna(change):
                 weighted_impact += data["weight"] * float(change)
                 valid_components += 1
 
@@ -223,7 +233,7 @@ def main():
         c3.metric("Deployment Signal", rec["Signal"], impact_str)
         st.info(f"Top Opportunity: **{rec['Fund']}** | Action: **{rec['Signal']}**")
 
-    # Bar Chart
+    # Bar Chart (Updates dynamically based on positive/negative impacts)
     chart_df = summary.copy()
     cmap = {"Strong Buy": "#f23645", "Medium Buy": "#f59e0b", "Hold Cash": "#38bdf8"}
     fig = px.bar(chart_df, x="Fund", y="Weighted Impact", color="Signal", color_discrete_map=cmap)
@@ -265,15 +275,17 @@ def main():
                 for ticker, data in holdings.items():
                     val = live_changes.get(ticker)
                     
-                    display_change = val if val is not None else 0.0
-                    if val is None:
-                        st.caption(f"⚠️ Yahoo Finance returned no data for '{ticker}'.")
+                    # Safely handle NaN and None 
+                    display_change = float(val) if pd.notna(val) else 0.0
+                    
+                    if pd.isna(val):
+                        st.caption(f"⚠️ Market data unavailable for '{ticker}' today.")
 
                     rows.append({
                         "Stock": data["name"],
                         "Weight": data["weight"] * 100,
                         "Live Change": display_change,
-                        "NAV Impact": (data["weight"] * display_change) if display_change is not None else 0.0
+                        "NAV Impact": (data["weight"] * display_change)
                     })
                 
                 df_stocks = pd.DataFrame(rows).sort_values("NAV Impact", ascending=True)
