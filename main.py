@@ -4,10 +4,9 @@ import plotly.express as px
 from datetime import datetime
 import pytz
 import requests
-import cloudscraper
+import yfinance as yf
 import time
 import json
-import re
 import concurrent.futures
 
 # --- APP CONFIGURATION ---
@@ -30,15 +29,53 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- Initialize Cloudscraper Globally ---
-scraper = cloudscraper.create_scraper()
-
 # --- OFFICIAL AMFI SCHEME CODES ---
 mf_amfi_codes = {
     "HDFC Flexi Cap Fund Direct Growth": "118955",
     "Parag Parikh Flexi Cap Fund Direct Growth": "122639",
     "Helios Flexi Cap Fund Direct Growth": "152135",
 }
+
+# --- GROWW SLUG TO YAHOO TICKER AUTO-TRANSLATOR ---
+def slug_to_ticker(slug):
+    """
+    Converts a Groww URL slug to a Yahoo Finance NSE ticker.
+    Adds common mappings, and attempts to guess the rest.
+    """
+    slug = str(slug).lower().strip()
+    
+    # Common overrides for slugs that don't match standard patterns
+    overrides = {
+        "reliance-industries": "RELIANCE.NS",
+        "hdfc-bank": "HDFCBANK.NS",
+        "icici-bank": "ICICIBANK.NS",
+        "infosys": "INFY.NS",
+        "tata-consultancy-services": "TCS.NS",
+        "itc": "ITC.NS",
+        "larsen-toubro": "LT.NS",
+        "bajaj-finance": "BAJFINANCE.NS",
+        "bharti-airtel": "BHARTIARTL.NS",
+        "state-bank-of-india": "SBIN.NS",
+        "kotak-mahindra-bank": "KOTAKBANK.NS",
+        "axis-bank": "AXISBANK.NS",
+        "hindustan-unilever": "HINDUNILVR.NS",
+        "mahindra-mahindra": "M&M.NS",
+        "maruti-suzuki-india": "MARUTI.NS",
+        "hcl-technologies": "HCLTECH.NS",
+        "sun-pharmaceutical-industries": "SUNPHARMA.NS",
+        "tata-motors": "TATAMOTORS.NS",
+        "titan-company": "TITAN.NS",
+        "power-grid-corporation-of-india": "POWERGRID.NS",
+        "bajaj-finserv": "BAJAJFINSV.NS",
+        "coal-india": "COALINDIA.NS",
+    }
+    
+    if slug in overrides:
+        return overrides[slug]
+    
+    # Fallback guesser: remove hyphens, uppercase, append .NS
+    guessed_ticker = slug.replace("-", "").upper() + ".NS"
+    return guessed_ticker
 
 def standardize_holdings(raw_funds):
     """Ensures holdings are formatted correctly regardless of the JSON structure."""
@@ -54,10 +91,8 @@ def standardize_holdings(raw_funds):
                     }
                 elif isinstance(data, (int, float)):
                     std_holdings[slug] = {"name": slug, "weight": float(data)}
-                elif isinstance(data, str):
-                    std_holdings[slug] = {"name": data, "weight": 0.0}
                 else:
-                    std_holdings[slug] = {"name": slug, "weight": 0.0}
+                    std_holdings[slug] = {"name": str(data), "weight": 0.0}
         standardized[fund] = std_holdings
     return standardized
 
@@ -76,52 +111,50 @@ def load_holdings():
 
 funds = load_holdings()
 
-# --- 100% GROWW-NATIVE SCRAPER (Cloudscraper Patched) ---
+# --- YFINANCE DATA SCRAPER ---
 @st.cache_data(ttl=60)
-def fetch_groww_index_data():
-    indices = {"NIFTY 50": "nifty-50", "SENSEX": "sensex"}
+def fetch_yahoo_index_data():
+    indices = {"NIFTY 50": "^NSEI", "SENSEX": "^BSESN"}
     data = {}
     
-    for name, slug in indices.items():
+    for name, ticker in indices.items():
         try:
-            url = f"https://groww.in/indices/{slug}"
-            # Using cloudscraper to bypass anti-bot walls
-            res = scraper.get(url, timeout=10)
+            tkr = yf.Ticker(ticker)
+            hist = tkr.history(period="2d")
             
-            # Scrape the background JSON injected by Groww
-            change_match = re.search(r'"dayChangePerc":\s*([-\d\.]+)', res.text)
-            val_match = re.search(r'"livePrice":\s*([-\d\.]+)', res.text)
-            
-            change = float(change_match.group(1)) if change_match else 0.0
-            value = float(val_match.group(1)) if val_match else 0.0
-            
-            # Basic validation to ensure we actually scraped something
-            ok_status = True if change_match and val_match else False
-            
-            data[name] = {"value": value, "change": change, "ok": ok_status}
+            if len(hist) >= 2:
+                prev_close = hist['Close'].iloc[-2]
+                latest = hist['Close'].iloc[-1]
+                change = ((latest - prev_close) / prev_close) * 100
+                data[name] = {"value": latest, "change": change, "ok": True}
+            else:
+                data[name] = {"value": 0.0, "change": 0.0, "ok": False}
         except Exception:
-            data[name] = {"value": None, "change": None, "ok": False}
+            data[name] = {"value": 0.0, "change": 0.0, "ok": False}
+            
     return data
 
 @st.cache_data(ttl=60)
-def fetch_groww_live_stocks(slugs):
+def fetch_yahoo_live_stocks(slugs):
     changes = {}
     valid_slugs = [s for s in slugs if s]
 
-    def scrape_stock(slug):
-        url = f"https://groww.in/stocks/{slug}"
+    def get_stock_change(slug):
+        ticker = slug_to_ticker(slug)
         try:
-            # Using cloudscraper to bypass anti-bot walls
-            res = scraper.get(url, timeout=10)
-            match = re.search(r'"dayChangePerc":\s*([-\d\.]+)', res.text)
-            if match:
-                return slug, float(match.group(1))
+            tkr = yf.Ticker(ticker)
+            hist = tkr.history(period="2d")
+            if len(hist) >= 2:
+                prev_close = hist['Close'].iloc[-2]
+                latest = hist['Close'].iloc[-1]
+                change = ((latest - prev_close) / prev_close) * 100
+                return slug, change
         except:
             pass
         return slug, None
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        results = executor.map(scrape_stock, valid_slugs)
+        results = executor.map(get_stock_change, valid_slugs)
 
     for slug, change in results:
         changes[slug] = change
@@ -129,7 +162,7 @@ def fetch_groww_live_stocks(slugs):
     changes["_status"] = "ok" if any(v is not None for v in changes.values()) else "failed"
     return changes
 
-# --- EXISTING AMFI NAV LOGIC (Remains purely requests-based) ---
+# --- EXISTING AMFI NAV LOGIC ---
 @st.cache_data(ttl=3600)
 def fetch_amfi_scheme_data(code):
     url = f"https://api.mfapi.in/mf/{code}"
@@ -171,9 +204,9 @@ def fetch_historical_mf_data(period="1mo"):
 
 # --- COMPUTATION ENGINE ---
 def compute_fund_summary():
-    market = fetch_groww_index_data()
+    market = fetch_yahoo_index_data()
     all_slugs = list(set(slug for holdings in funds.values() for slug in holdings.keys()))
-    live_changes = fetch_groww_live_stocks(all_slugs)
+    live_changes = fetch_yahoo_live_stocks(all_slugs)
     amfi = fetch_amfi_eod_data()
 
     rows = []
@@ -208,8 +241,8 @@ def compute_fund_summary():
 
 # --- DASHBOARD UI ---
 def main():
-    st.title("📉 MF Dip Analyzer Pro (Groww Native)")
-    st.caption("100% Yahoo-Free. Multi-threaded live scraping directly from Groww endpoints using Cloudscraper.")
+    st.title("📉 MF Dip Analyzer Pro (yfinance Edition)")
+    st.caption("Powered by Yahoo Finance API. Robust server-side fetching with Auto-Slug translation.")
 
     if st.button("Refresh data"):
         st.cache_data.clear()
@@ -217,7 +250,7 @@ def main():
     market, summary, rec, live_changes = compute_fund_summary()
 
     if not market or not market.get("NIFTY 50", {}).get("ok"):
-        st.warning("Market data temporarily unavailable from Groww. Displaying zeros.")
+        st.warning("Market indices temporarily unavailable. Yahoo Finance API may be rate-limiting.")
 
     c1, c2, c3 = st.columns(3)
     nifty, sensex = market.get("NIFTY 50", {}), market.get("SENSEX", {})
@@ -273,11 +306,17 @@ def main():
                 rows = []
                 for slug, data in holdings.items():
                     val = live_changes.get(slug)
+                    
+                    # Notify user if the auto-translator failed for a specific stock
+                    display_change = val if val is not None else 0.0
+                    if val is None:
+                        st.caption(f"⚠️ Could not map '{slug}' to NSE ticker.")
+
                     rows.append({
                         "Stock": data["name"],
                         "Weight": data["weight"] * 100,
-                        "Live Change": val,
-                        "NAV Impact": (data["weight"] * val) if val is not None else 0.0
+                        "Live Change": display_change,
+                        "NAV Impact": (data["weight"] * display_change) if display_change is not None else 0.0
                     })
                 
                 df_stocks = pd.DataFrame(rows).sort_values("NAV Impact", ascending=True)
