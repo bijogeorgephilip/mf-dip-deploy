@@ -7,6 +7,7 @@ import requests
 import yfinance as yf
 import json
 import concurrent.futures
+import time
 
 # --- ATTEMPT TO LOAD NLP ENGINE ---
 try:
@@ -136,6 +137,8 @@ def fetch_stock_fundamentals(tickers):
 
     def get_fundamentals(ticker):
         try:
+            # Stagger the requests to avoid Yahoo Finance 401 Unauthorized / anti-bot blocks
+            time.sleep(0.5) 
             tkr = yf.Ticker(ticker)
             info = tkr.info or {}
             pe = info.get("trailingPE") or info.get("forwardPE")
@@ -157,19 +160,16 @@ def fetch_stock_fundamentals(tickers):
             pass
         return ticker, {"pe": None, "pb": None, "roe": None, "target_mean": None, "target_high": None, "target_low": None}
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    # Reduced workers to 3 to slow down simultaneous requests to Yahoo's .info endpoint
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         results = executor.map(get_fundamentals, valid_tickers)
 
     for ticker, data in results:
         fund_data[ticker] = data
     return fund_data
 
-@st.cache_data(ttl=14400) # Cache news for 4 hours
+@st.cache_data(ttl=14400) 
 def fetch_news_sentiment(ticker_names):
-    """
-    Bypasses Yahoo Finance's 401 blocks by using Google News RSS.
-    Takes a dictionary mapping {ticker: company_name}.
-    """
     sentiment_data = {}
     if not VADER_AVAILABLE:
         return sentiment_data
@@ -180,7 +180,6 @@ def fetch_news_sentiment(ticker_names):
 
     def get_sentiment(ticker, name):
         try:
-            # Query Google News for the specific company in the Indian market context
             query = f"{name} stock India"
             url = f"https://news.google.com/rss/search?q={quote(query)}&hl=en-IN&gl=IN&ceid=IN:en"
             
@@ -194,7 +193,7 @@ def fetch_news_sentiment(ticker_names):
             
             if response.status_code == 200:
                 root = ET.fromstring(response.text)
-                for item in root.findall('.//item')[:5]:  # Grab top 5 recent articles
+                for item in root.findall('.//item')[:5]:  
                     title_elem = item.find('title')
                     title = title_elem.text if title_elem is not None else ""
                     
@@ -217,10 +216,8 @@ def fetch_news_sentiment(ticker_names):
             
             return ticker, {"score": avg_score, "label": label, "headlines": headlines}
         except Exception:
-            # Safe fallback if Google News rate limits or structural changes occur
             return ticker, {"score": 0.0, "label": "Neutral", "headlines": []}
 
-    # Run network calls concurrently for speed
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = [executor.submit(get_sentiment, tkr, name) for tkr, name in ticker_names.items()]
         for future in concurrent.futures.as_completed(futures):
@@ -293,7 +290,6 @@ def style_sentiment(val):
 def compute_fund_summary(strong_thresh, medium_thresh):
     market = fetch_yahoo_index_data()
     
-    # Map tickers to their company names so Google News can search accurately
     all_tickers_names = {}
     for holdings in funds.values():
         for ticker, data in holdings.items():
@@ -384,7 +380,6 @@ def compute_fund_summary(strong_thresh, medium_thresh):
             "Valuation Coverage (%)": round(weight_target_cov * 100, 1)
         })
         
-        # Calculate Fund Level Sentiment
         if weight_sentiment_cov > 0:
             final_sent_score = weighted_sentiment / weight_sentiment_cov
             if final_sent_score > 0.05: f_label = "Bullish"
