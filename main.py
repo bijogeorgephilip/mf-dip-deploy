@@ -204,7 +204,7 @@ def compute_fund_summary(strong_thresh, medium_thresh):
         # Calculate Estimated Live Intraday NAV for 2:00 PM execution
         estimated_intraday_nav = prev_nav * (1 + (weighted_impact / 100)) if prev_nav else 0.0
         
-        # Applying dynamic thresholds from sidebar
+        # Applying dynamic thresholds from UI
         if not valid_components: signal = "Hold Cash"
         elif weighted_impact <= strong_thresh: signal = "Strong Buy"
         elif weighted_impact <= medium_thresh: signal = "Medium Buy"
@@ -228,20 +228,20 @@ def main():
     st.title("📉 MF Dip Analyzer Pro")
     st.caption("2:00 PM Execution Engine: Predicts same-day NAV changes using live stock weights.")
 
-    # --- SIDEBAR SETTINGS & TIMESTAMP ---
-    st.sidebar.header("⚙️ Execution Settings")
-    
-    # Custom Thresholds
-    strong_thresh = st.sidebar.slider("Strong Buy Trigger (%)", min_value=-3.0, max_value=0.0, value=-0.50, step=0.05)
-    medium_thresh = st.sidebar.slider("Medium Buy Trigger (%)", min_value=-1.5, max_value=0.0, value=-0.25, step=0.05)
-    
-    st.sidebar.divider()
-    
-    # Timestamp
-    ist_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%I:%M:%S %p')
-    st.sidebar.metric("Last Data Fetch (IST)", ist_time)
-    if st.sidebar.button("🔄 Force Refresh Data"):
-        st.cache_data.clear()
+    # --- MAIN INTERFACE SETTINGS & TIMESTAMP ---
+    with st.expander("⚙️ Execution Settings & System Status", expanded=True):
+        col_set1, col_set2, col_set3 = st.columns(3)
+        
+        with col_set1:
+            strong_thresh = st.slider("Strong Buy Trigger (%)", min_value=-3.0, max_value=0.0, value=-0.50, step=0.05)
+        with col_set2:
+            medium_thresh = st.slider("Medium Buy Trigger (%)", min_value=-1.5, max_value=0.0, value=-0.25, step=0.05)
+        with col_set3:
+            ist_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%I:%M:%S %p')
+            st.metric("Last Data Fetch (IST)", ist_time)
+            if st.button("🔄 Force Refresh Data", use_container_width=True):
+                st.cache_data.clear()
+                st.rerun()
 
     # Engine Call
     market, summary, rec, stock_info_dict = compute_fund_summary(strong_thresh, medium_thresh)
@@ -344,7 +344,9 @@ def main():
                 
                 st.caption(f"📈 Advancing: **{advancers}** | 📉 Declining: **{decliners}**")
                 
-                df_stocks = pd.DataFrame(rows).sort_values("NAV Impact", ascending=True)
+                # Sorted by Weight (Descending) by default
+                df_stocks = pd.DataFrame(rows).sort_values("Weight", ascending=False)
+                
                 if not df_stocks.empty:
                     # Apply color styling to the individual stock tables
                     styled_stocks = df_stocks.style.format({
