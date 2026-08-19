@@ -433,7 +433,7 @@ def main():
         else:
             st.info("Waiting for a deployment signal to generate allocation chart.")
 
-    # --- INDIVIDUAL HOLDINGS BREAKDOWN ---
+# --- INDIVIDUAL HOLDINGS BREAKDOWN ---
     st.divider()
     st.subheader("🔍 Individual Fund Holdings Breakdown")
     
@@ -441,19 +441,32 @@ def main():
     
     for idx, (fund_name, holdings) in enumerate(funds.items()):
         with cols[idx]:
-            with st.expander(f"{fund_name} Stocks"):
+            # Added expanded=True to keep it open by default
+            with st.expander(f"{fund_name} Stocks", expanded=True):
                 stock_rows = []
                 for ticker, weight in holdings.items():
                     val = live_changes.get(ticker)
+                    
+                    # Calculate the actual mathematical impact on the NAV
+                    impact = (weight * val) if val is not None else 0.0
+                    
                     stock_rows.append({
                         "Stock": ticker.replace(".NS", ""),
-                        "Weight": f"{weight * 100:.1f}%",
-                        "Live Change": round(val, 2) if val is not None else None
+                        "Weight": weight * 100,
+                        "Live Change": val,
+                        "Impact": impact
                     })
                 
-                df_stocks = pd.DataFrame(stock_rows).sort_values("Live Change", ascending=True)
+                # Sort by Impact (most negative impact at the top to highlight the dip)
+                df_stocks = pd.DataFrame(stock_rows).sort_values("Impact", ascending=True)
+                
+                # Format the display cleanly
                 st.dataframe(
-                    df_stocks.style.format({"Live Change": "{:.2f}%"}, na_rep="N/A"), 
+                    df_stocks.style.format({
+                        "Weight": "{:.1f}%", 
+                        "Live Change": "{:.2f}%",
+                        "Impact": "{:.3f}%"
+                    }, na_rep="N/A"), 
                     use_container_width=True, 
                     hide_index=True
                 )
