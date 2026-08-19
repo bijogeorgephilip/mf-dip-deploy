@@ -29,6 +29,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# --- BROWSER HEADERS (To prevent anti-bot blocking) ---
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+}
+
 # --- OFFICIAL AMFI SCHEME CODES ---
 mf_amfi_codes = {
     "HDFC Flexi Cap Fund Direct Growth": "118955",
@@ -36,13 +43,38 @@ mf_amfi_codes = {
     "Helios Flexi Cap Fund Direct Growth": "152135",
 }
 
+def standardize_holdings(raw_funds):
+    """Ensures holdings are formatted correctly regardless of the JSON structure."""
+    standardized = {}
+    for fund, holdings in raw_funds.items():
+        std_holdings = {}
+        if isinstance(holdings, dict):
+            for slug, data in holdings.items():
+                if isinstance(data, dict):
+                    std_holdings[slug] = {
+                        "name": data.get("name", slug),
+                        "weight": float(data.get("weight", 0.0))
+                    }
+                elif isinstance(data, (int, float)):
+                    std_holdings[slug] = {"name": slug, "weight": float(data)}
+                elif isinstance(data, str):
+                    std_holdings[slug] = {"name": data, "weight": 0.0}
+                else:
+                    std_holdings[slug] = {"name": slug, "weight": 0.0}
+        standardized[fund] = std_holdings
+    return standardized
+
 @st.cache_data(ttl=3600)
 def load_holdings():
     try:
         with open("holdings.json", "r") as file:
-            return json.load(file)
+            raw_data = json.load(file)
+            return standardize_holdings(raw_data)
     except FileNotFoundError:
         st.error("Holdings file not found. Please run update_holdings.py first.")
+        return {}
+    except json.JSONDecodeError:
+        st.error("Error reading holdings.json. Ensure it is valid JSON.")
         return {}
 
 funds = load_holdings()
@@ -52,19 +84,23 @@ funds = load_holdings()
 def fetch_groww_index_data():
     indices = {"NIFTY 50": "nifty-50", "SENSEX": "sensex"}
     data = {}
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
     for name, slug in indices.items():
         try:
             url = f"https://groww.in/indices/{slug}"
-            res = requests.get(url, headers=headers, timeout=5)
+            res = requests.get(url, headers=HEADERS, timeout=5)
+            
             # Scrape the background JSON injected by Groww
             change_match = re.search(r'"dayChangePerc":\s*([-\d\.]+)', res.text)
             val_match = re.search(r'"livePrice":\s*([-\d\.]+)', res.text)
             
             change = float(change_match.group(1)) if change_match else 0.0
             value = float(val_match.group(1)) if val_match else 0.0
-            data[name] = {"value": value, "change": change, "ok": True}
+            
+            # Basic validation to ensure we actually scraped something
+            ok_status = True if change_match and val_match else False
+            
+            data[name] = {"value": value, "change": change, "ok": ok_status}
         except Exception:
             data[name] = {"value": None, "change": None, "ok": False}
     return data
@@ -76,10 +112,8 @@ def fetch_groww_live_stocks(slugs):
 
     def scrape_stock(slug):
         url = f"https://groww.in/stocks/{slug}"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         try:
-            res = requests.get(url, headers=headers, timeout=5)
-            # Scrape the dayChange percentage directly from the HTML source
+            res = requests.get(url, headers=HEADERS, timeout=5)
             match = re.search(r'"dayChangePerc":\s*([-\d\.]+)', res.text)
             if match:
                 return slug, float(match.group(1))
@@ -87,7 +121,6 @@ def fetch_groww_live_stocks(slugs):
             pass
         return slug, None
 
-    # Multi-threading: Fetches 10 stocks simultaneously instead of 1 by 1
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         results = executor.map(scrape_stock, valid_slugs)
 
@@ -164,7 +197,6 @@ def compute_fund_summary():
 
         rows.append({
             "Fund": fund_name,
-            # Changed from None to 0.0 to prevent Float formatting errors
             "Weighted Impact": round(weighted_impact, 2) if valid_components else 0.0,
             "NAV": round(nav_data.get("nav", 0), 3) if nav_data.get("nav") else None,
             "NAV Change": round(nav_data.get("change", 0), 2) if nav_data.get("change") else None,
@@ -186,7 +218,7 @@ def main():
     market, summary, rec, live_changes = compute_fund_summary()
 
     if not market or not market.get("NIFTY 50", {}).get("ok"):
-        st.warning("Market data temporarily unavailable from Groww.")
+        st.warning("Market data temporarily unavailable from Groww. Displaying zeros.")
 
     c1, c2, c3 = st.columns(3)
     nifty, sensex = market.get("NIFTY 50", {}), market.get("SENSEX", {})
@@ -224,14 +256,17 @@ def main():
         holdings_data = funds.get(selected_fund, {})
         if holdings_data:
             donut_data = [{"Stock": v["name"], "Weight": v["weight"]} for k, v in holdings_data.items()]
-            fig3 = px.pie(pd.DataFrame(donut_data), values='Weight', names='Stock', hole=0.4, template="plotly_dark")
-            fig3.update_traces(textposition='inside', textinfo='percent+label')
-            st.plotly_chart(fig3, use_container_width=True)
+            if donut_data:
+                fig3 = px.pie(pd.DataFrame(donut_data), values='Weight', names='Stock', hole=0.4, template="plotly_dark")
+                fig3.update_traces(textposition='inside', textinfo='percent+label')
+                st.plotly_chart(fig3, use_container_width=True)
+            else:
+                st.info("No holdings data to display for this fund.")
 
     # Detailed Holdings Table
     st.divider()
     st.subheader("🔍 Live Impact Breakdown")
-    cols = st.columns(len(funds))
+    cols = st.columns(len(funds) if funds else 1)
     
     for idx, (fund_name, holdings) in enumerate(funds.items()):
         with cols[idx]:
@@ -247,10 +282,13 @@ def main():
                     })
                 
                 df_stocks = pd.DataFrame(rows).sort_values("NAV Impact", ascending=True)
-                st.dataframe(
-                    df_stocks.style.format({"Weight": "{:.1f}%", "Live Change": "{:.2f}%", "NAV Impact": "{:.3f}%"}, na_rep="N/A"), 
-                    hide_index=True, use_container_width=True
-                )
+                if not df_stocks.empty:
+                    st.dataframe(
+                        df_stocks.style.format({"Weight": "{:.1f}%", "Live Change": "{:.2f}%", "NAV Impact": "{:.3f}%"}, na_rep="N/A"), 
+                        hide_index=True, use_container_width=True
+                    )
+                else:
+                    st.write("No stock data available.")
 
 if __name__ == "__main__":
     main()
