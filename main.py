@@ -164,7 +164,8 @@ def compute_fund_summary():
 
         rows.append({
             "Fund": fund_name,
-            "Weighted Impact": round(weighted_impact, 2) if valid_components else None,
+            # Changed from None to 0.0 to prevent Float formatting errors
+            "Weighted Impact": round(weighted_impact, 2) if valid_components else 0.0,
             "NAV": round(nav_data.get("nav", 0), 3) if nav_data.get("nav") else None,
             "NAV Change": round(nav_data.get("change", 0), 2) if nav_data.get("change") else None,
             "Signal": signal,
@@ -177,7 +178,7 @@ def compute_fund_summary():
 # --- DASHBOARD UI ---
 def main():
     st.title("📉 MF Dip Analyzer Pro (Groww Native)")
-    st.caption("Multi-threaded live scraping directly from Groww endpoints.")
+    st.caption("100% Yahoo-Free. Multi-threaded live scraping directly from Groww endpoints.")
 
     if st.button("Refresh data"):
         st.cache_data.clear()
@@ -193,7 +194,7 @@ def main():
     c1.metric("NIFTY 50", f"₹{nifty.get('value', 0):,.2f}", f"{nifty.get('change', 0):.2f}%")
     c2.metric("SENSEX", f"₹{sensex.get('value', 0):,.2f}", f"{sensex.get('change', 0):.2f}%")
     
-if rec is not None:
+    if rec is not None:
         impact = rec['Weighted Impact']
         impact_str = f"{impact:.2f}%" if pd.notna(impact) else "N/A"
         
