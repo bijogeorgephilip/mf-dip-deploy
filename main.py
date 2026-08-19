@@ -36,63 +36,22 @@ mf_amfi_codes = {
     "Helios Flexi Cap Fund Direct Growth": "152135",
 }
 
-# --- GROWW SLUG TO YAHOO TICKER AUTO-TRANSLATOR ---
-def slug_to_ticker(slug):
-    """
-    Converts a Groww URL slug to a Yahoo Finance NSE ticker.
-    Adds common mappings, and attempts to guess the rest.
-    """
-    slug = str(slug).lower().strip()
-    
-    # Common overrides for slugs that don't match standard patterns
-    overrides = {
-        "reliance-industries": "RELIANCE.NS",
-        "hdfc-bank": "HDFCBANK.NS",
-        "icici-bank": "ICICIBANK.NS",
-        "infosys": "INFY.NS",
-        "tata-consultancy-services": "TCS.NS",
-        "itc": "ITC.NS",
-        "larsen-toubro": "LT.NS",
-        "bajaj-finance": "BAJFINANCE.NS",
-        "bharti-airtel": "BHARTIARTL.NS",
-        "state-bank-of-india": "SBIN.NS",
-        "kotak-mahindra-bank": "KOTAKBANK.NS",
-        "axis-bank": "AXISBANK.NS",
-        "hindustan-unilever": "HINDUNILVR.NS",
-        "mahindra-mahindra": "M&M.NS",
-        "maruti-suzuki-india": "MARUTI.NS",
-        "hcl-technologies": "HCLTECH.NS",
-        "sun-pharmaceutical-industries": "SUNPHARMA.NS",
-        "tata-motors": "TATAMOTORS.NS",
-        "titan-company": "TITAN.NS",
-        "power-grid-corporation-of-india": "POWERGRID.NS",
-        "bajaj-finserv": "BAJAJFINSV.NS",
-        "coal-india": "COALINDIA.NS",
-    }
-    
-    if slug in overrides:
-        return overrides[slug]
-    
-    # Fallback guesser: remove hyphens, uppercase, append .NS
-    guessed_ticker = slug.replace("-", "").upper() + ".NS"
-    return guessed_ticker
-
 def standardize_holdings(raw_funds):
-    """Ensures holdings are formatted correctly regardless of the JSON structure."""
+    """Ensures holdings are formatted correctly. Keys are now read directly as Yahoo Tickers."""
     standardized = {}
     for fund, holdings in raw_funds.items():
         std_holdings = {}
         if isinstance(holdings, dict):
-            for slug, data in holdings.items():
+            for ticker, data in holdings.items():
                 if isinstance(data, dict):
-                    std_holdings[slug] = {
-                        "name": data.get("name", slug),
+                    std_holdings[ticker] = {
+                        "name": data.get("name", ticker),
                         "weight": float(data.get("weight", 0.0))
                     }
                 elif isinstance(data, (int, float)):
-                    std_holdings[slug] = {"name": slug, "weight": float(data)}
+                    std_holdings[ticker] = {"name": ticker, "weight": float(data)}
                 else:
-                    std_holdings[slug] = {"name": str(data), "weight": 0.0}
+                    std_holdings[ticker] = {"name": str(data), "weight": 0.0}
         standardized[fund] = std_holdings
     return standardized
 
@@ -135,12 +94,11 @@ def fetch_yahoo_index_data():
     return data
 
 @st.cache_data(ttl=60)
-def fetch_yahoo_live_stocks(slugs):
+def fetch_yahoo_live_stocks(tickers):
     changes = {}
-    valid_slugs = [s for s in slugs if s]
+    valid_tickers = [t for t in tickers if t]
 
-    def get_stock_change(slug):
-        ticker = slug_to_ticker(slug)
+    def get_stock_change(ticker):
         try:
             tkr = yf.Ticker(ticker)
             hist = tkr.history(period="2d")
@@ -148,16 +106,16 @@ def fetch_yahoo_live_stocks(slugs):
                 prev_close = hist['Close'].iloc[-2]
                 latest = hist['Close'].iloc[-1]
                 change = ((latest - prev_close) / prev_close) * 100
-                return slug, change
+                return ticker, change
         except:
             pass
-        return slug, None
+        return ticker, None
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        results = executor.map(get_stock_change, valid_slugs)
+        results = executor.map(get_stock_change, valid_tickers)
 
-    for slug, change in results:
-        changes[slug] = change
+    for ticker, change in results:
+        changes[ticker] = change
 
     changes["_status"] = "ok" if any(v is not None for v in changes.values()) else "failed"
     return changes
@@ -205,8 +163,8 @@ def fetch_historical_mf_data(period="1mo"):
 # --- COMPUTATION ENGINE ---
 def compute_fund_summary():
     market = fetch_yahoo_index_data()
-    all_slugs = list(set(slug for holdings in funds.values() for slug in holdings.keys()))
-    live_changes = fetch_yahoo_live_stocks(all_slugs)
+    all_tickers = list(set(ticker for holdings in funds.values() for ticker in holdings.keys()))
+    live_changes = fetch_yahoo_live_stocks(all_tickers)
     amfi = fetch_amfi_eod_data()
 
     rows = []
@@ -214,8 +172,8 @@ def compute_fund_summary():
         weighted_impact = 0.0
         valid_components = 0
 
-        for slug, data in holdings.items():
-            change = live_changes.get(slug)
+        for ticker, data in holdings.items():
+            change = live_changes.get(ticker)
             if change is not None:
                 weighted_impact += data["weight"] * float(change)
                 valid_components += 1
@@ -242,7 +200,7 @@ def compute_fund_summary():
 # --- DASHBOARD UI ---
 def main():
     st.title("📉 MF Dip Analyzer Pro (yfinance Edition)")
-    st.caption("Powered by Yahoo Finance API. Robust server-side fetching with Auto-Slug translation.")
+    st.caption("Powered by Yahoo Finance API. Instant institutional-grade fetching directly from official tickers.")
 
     if st.button("Refresh data"):
         st.cache_data.clear()
@@ -304,13 +262,12 @@ def main():
         with cols[idx]:
             with st.expander(f"{fund_name}", expanded=True):
                 rows = []
-                for slug, data in holdings.items():
-                    val = live_changes.get(slug)
+                for ticker, data in holdings.items():
+                    val = live_changes.get(ticker)
                     
-                    # Notify user if the auto-translator failed for a specific stock
                     display_change = val if val is not None else 0.0
                     if val is None:
-                        st.caption(f"⚠️ Could not map '{slug}' to NSE ticker.")
+                        st.caption(f"⚠️ Yahoo Finance returned no data for '{ticker}'.")
 
                     rows.append({
                         "Stock": data["name"],
