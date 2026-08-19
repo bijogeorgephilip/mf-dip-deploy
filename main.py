@@ -6,6 +6,8 @@ from datetime import datetime
 import pytz
 import requests
 import time
+import json
+import os
 
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="MF Dip Analyzer Pro", page_icon="📉", layout="wide")
@@ -42,49 +44,17 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- MUTUAL FUND PORTFOLIO DATA (LIVE INTRADAY PREDICTOR WEIGHTS) ---
-funds = {
-    "HDFC Flexi Cap": {
-        "ICICIBANK.NS": 0.095, "HDFCBANK.NS": 0.075, "AXISBANK.NS": 0.065, "SBIN.NS": 0.055,
-        "KOTAKBANK.NS": 0.045, "BHARTIARTL.NS": 0.040, "LT.NS": 0.038, "CIPLA.NS": 0.035,
-        "HCLTECH.NS": 0.032, "RELIANCE.NS": 0.030, "INFY.NS": 0.028, "TCS.NS": 0.025,
-        "ITC.NS": 0.022, "BAJFINANCE.NS": 0.020, "NTPC.NS": 0.018, "SUNPHARMA.NS": 0.015,
-        "M&M.NS": 0.015, "TITAN.NS": 0.015, "ASIANPAINT.NS": 0.015, "TATASTEEL.NS": 0.015,
-        "ULTRACEMCO.NS": 0.014, "POWERGRID.NS": 0.014, "BAJAJ-AUTO.NS": 0.014,
-        "WIPRO.NS": 0.014, "TECHM.NS": 0.013, "JSWSTEEL.NS": 0.013,
-        "HINDALCO.NS": 0.013, "COALINDIA.NS": 0.013, "ONGC.NS": 0.012, "GRASIM.NS": 0.012,
-        "ADANIPORTS.NS": 0.012, "DIVISLAB.NS": 0.012, "MARUTI.NS": 0.012, "NESTLEIND.NS": 0.012,
-        "TATACONSUM.NS": 0.012, "INDUSINDBK.NS": 0.011, "DRREDDY.NS": 0.011, "HINDUNILVR.NS": 0.011,
-        "SBILIFE.NS": 0.011, "HDFCLIFE.NS": 0.011, "BAJAJFINSV.NS": 0.010, "BPCL.NS": 0.010,
-    },
-    "Parag Parikh Flexi Cap": {
-        "HDFCBANK.NS": 0.090, "ITC.NS": 0.080, "POWERGRID.NS": 0.065, "ICICIBANK.NS": 0.060,
-        "BAJFINANCE.NS": 0.055, "MARUTI.NS": 0.050, "HCLTECH.NS": 0.045, "COALINDIA.NS": 0.040,
-        "CDSL.NS": 0.035, "RELIANCE.NS": 0.030, "GOOGL": 0.060, "MSFT": 0.050, "AMZN": 0.045, "META": 0.040,
-        "BAJAJ-AUTO.NS": 0.030, "HEROMOTOCO.NS": 0.025, "NESTLEIND.NS": 0.020, "BRITANNIA.NS": 0.020,
-        "TATACONSUM.NS": 0.020, "EICHERMOT.NS": 0.015, "TVSMOTOR.NS": 0.015, "COLPAL.NS": 0.015,
-        "HINDUNILVR.NS": 0.015, "DABUR.NS": 0.015, "PIDILITIND.NS": 0.015, "MARICO.NS": 0.015,
-        "GODREJCP.NS": 0.015, "UBL.NS": 0.010,
-    },
-    "Helios Flexi Cap": {
-        "ADANIPORTS.NS": 0.0416, 
-        "HDFCBANK.NS": 0.0400, 
-        "ICICIBANK.NS": 0.0396, 
-        "RELIANCE.NS": 0.0303,
-        "NTPC.NS": 0.0250,
-        "SBIN.NS": 0.0240,
-        "TCS.NS": 0.0210,
-        "INFY.NS": 0.0200,
-        "LT.NS": 0.0180,
-        "ITC.NS": 0.0150,
-        "TRENT.NS": 0.0150,
-        "INDIGO.NS": 0.0150,
-        "ZOMATO.NS": 0.0150,
-        "HAL.NS": 0.0120,
-        "POLICYBZR.NS": 0.0100,
-        "SWIGGY.NS": 0.0063, 
-    },
-}
+# --- MUTUAL FUND PORTFOLIO DATA (LOADED DYNAMICALLY) ---
+@st.cache_data(ttl=3600) # Caches the JSON so it doesn't read the file on every single click
+def load_holdings():
+    try:
+        with open("holdings.json", "r") as file:
+            return json.load(file)
+    except FileNotFoundError:
+        st.error("Holdings file not found. Please ensure holdings.json exists.")
+        return {}
+
+funds = load_holdings()
 
 # --- OFFICIAL AMFI SCHEME CODES (Direct Growth Plans) ---
 mf_amfi_codes = {
