@@ -55,7 +55,7 @@ st.markdown(
 # --- TICKER MAPPING & CLEANUP ---
 TICKER_MAPPING = {
     "KVBANK.NS": "KARURVYSYA.NS",
-    "ETERNAL.NS": "ZOMATO.NS",     # Enforce Zomato mapping for Yahoo Finance
+    "ZOMATO.NS": "ETERNAL.NS",     # Map legacy Zomato to new Eternal ticker for Yahoo Finance
     "CENTURYTEX.NS": "ABREL.NS"    # Reroute Century Textiles to Aditya Birla Real Estate
 }
 
@@ -111,13 +111,13 @@ def load_holdings_v2():
                         if ticker in INVALID_YF_TICKERS or ticker.startswith("_"):
                             continue
                         
-                        # Apply mapping (Eternal -> Zomato, CenturyTex -> ABREL)
+                        # Apply mapping (Zomato -> Eternal, CenturyTex -> ABREL)
                         clean_ticker = TICKER_MAPPING.get(ticker, ticker)
                         
                         if isinstance(data, dict):
                             stock_name = data.get("name", clean_ticker.replace(".NS", ""))
-                            # Force Zomato naming in UI
-                            if clean_ticker == "ZOMATO.NS" or "ETERNAL" in stock_name.upper():
+                            # Force "Zomato" naming in UI regardless of Eternal ticker
+                            if clean_ticker == "ETERNAL.NS" or clean_ticker == "ZOMATO.NS" or "ETERNAL" in stock_name.upper():
                                 stock_name = "Zomato"
                                 
                             std_holdings[clean_ticker] = {
@@ -750,7 +750,6 @@ def main():
     st.divider()
     st.subheader("🔍 Live Stock Impact Breakdown")
     
-    # Render in rows of 3 to prevent squishing
     fund_items = list(funds.items())
     for i in range(0, len(fund_items), 3):
         cols = st.columns(3)
