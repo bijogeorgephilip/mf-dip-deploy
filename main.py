@@ -21,7 +21,6 @@ except ImportError:
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="MF Dip Analyzer Pro", page_icon="📉", layout="wide")
 
-# --- PREMIUM TRADING TERMINAL THEME CSS ---
 st.markdown(
     """
     <style>
@@ -38,9 +37,21 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- CLEANED OFFICIAL AMFI SCHEME CODES ---
+# --- TICKER MAPPING & CLEANUP ---
+TICKER_MAPPING = {
+    "KVBANK.NS": "KARURVYSYA.NS",
+    "ETERNAL.NS": "ZOMATO.NS"
+}
+
+INVALID_YF_TICKERS = {
+    "ADITYAINFO.NS", # Unlisted Equity
+    "last_updated",
+    "description"
+}
+
+# --- CORRECTED OFFICIAL AMFI SCHEME CODES ---
 mf_amfi_codes = {
-    "HDFC Flexi Cap Fund Direct Growth": "118955",
+    "HDFC Flexi Cap Direct Plan Growth": "118955",
     "Parag Parikh Flexi Cap Fund Direct Growth": "122639",
     "Helios Flexi Cap Fund Direct Growth": "152135",
     "ICICI Prudential Aggressive Hybrid Fund Direct Growth": "120251",
@@ -50,7 +61,6 @@ mf_amfi_codes = {
 
 # --- HTTP SESSION CREATOR ---
 def get_custom_session():
-    """Creates a custom requests session with browser headers to prevent Yahoo 401 blocks."""
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -62,28 +72,29 @@ def get_custom_session():
 def standardize_holdings(raw_funds):
     standardized = {}
     for fund, holdings in raw_funds.items():
-        # --- FIX: IGNORE THE METADATA ENTRY ---
-        if fund == "_metadata":
+        # --- FIX 1: EXPLICITLY NUKE METADATA ---
+        if fund == "_metadata" or fund.startswith("_"):
             continue
             
-        clean_fund_name = fund
-        if fund == "HDFC Flexi Cap": clean_fund_name = "HDFC Flexi Cap Fund Direct Growth"
-        elif fund == "Parag Parikh Flexi Cap": clean_fund_name = "Parag Parikh Flexi Cap Fund Direct Growth"
-        elif fund == "Helios Flexi Cap": clean_fund_name = "Helios Flexi Cap Fund Direct Growth"
-        
         std_holdings = {}
         if isinstance(holdings, dict):
             for ticker, data in holdings.items():
+                if ticker in INVALID_YF_TICKERS:
+                    continue
+                
+                # --- FIX 2: APPLY TICKER MAPPINGS ---
+                clean_ticker = TICKER_MAPPING.get(ticker, ticker)
+                
                 if isinstance(data, dict):
-                    std_holdings[ticker] = {
-                        "name": data.get("name", ticker),
+                    std_holdings[clean_ticker] = {
+                        "name": data.get("name", clean_ticker),
                         "weight": float(data.get("weight", 0.0))
                     }
                 elif isinstance(data, (int, float)):
-                    std_holdings[ticker] = {"name": ticker, "weight": float(data)}
+                    std_holdings[clean_ticker] = {"name": clean_ticker, "weight": float(data)}
                 else:
-                    std_holdings[ticker] = {"name": str(data), "weight": 0.0}
-        standardized[clean_fund_name] = std_holdings
+                    std_holdings[clean_ticker] = {"name": str(data), "weight": 0.0}
+        standardized[fund] = std_holdings
     return standardized
 
 @st.cache_data(ttl=3600)
@@ -191,7 +202,6 @@ def fetch_stock_fundamentals(tickers):
 
 @st.cache_data(ttl=14400)
 def fetch_news_sentiment(ticker_names):
-    """Fetches news headlines from Google News RSS and analyzes sentiment with VADER."""
     sentiment_data = {}
     if not VADER_AVAILABLE:
         return sentiment_data
@@ -270,7 +280,7 @@ def fetch_amfi_eod_data():
             latest = df.iloc[-1]["nav"]
             eod[name] = {"nav": latest, "date": df.iloc[-1]["date"].strftime("%d-%m-%Y")}
         else:
-            eod[name] = {"nav": None, "date": "N/A"}
+            eod[name] = {"nav": 0.0, "date": "N/A"}
     return eod
 
 @st.cache_data(ttl=3600)
@@ -281,9 +291,10 @@ def fetch_historical_mf_data(period="1mo"):
         if not df.empty:
             cutoff = df["date"].max() - pd.Timedelta(days=30)
             df = df[df["date"] >= cutoff].copy()
-            df["Normalized"] = (df["nav"] / df["nav"].iloc[0]) * 100
-            df["Fund"] = name
-            df_list.append(df.rename(columns={"date": "Date"}))
+            if not df.empty:
+                df["Normalized"] = (df["nav"] / df["nav"].iloc[0]) * 100
+                df["Fund"] = name
+                df_list.append(df.rename(columns={"date": "Date"}))
     return pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
 
 # --- COLOR FORMATTING FUNCTIONS ---
@@ -664,7 +675,6 @@ def main():
                     use_container_width=True
                 )
                 
-                # Display Actual Headlines inside Expander
                 st.markdown("#### Read Underlying Headlines")
                 for ticker, data in fund_stocks_sent.items():
                     s_stats = sentiment_dict.get(ticker, {})
@@ -699,7 +709,8 @@ def main():
                     if display_change > 0: advancers += 1
                     elif display_change < 0: decliners += 1
                     
-                    if pd.isna(val):
+                    # Do not show warnings for perfectly valid stocks that didn't trade, but flag actual unavailable
+                    if pd.isna(val) and price == 0.0:
                         st.caption(f"⚠️ Market data unavailable for '{ticker}'.")
 
                     rows.append({
