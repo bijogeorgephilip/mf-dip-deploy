@@ -43,6 +43,9 @@ mf_amfi_codes = {
     "HDFC Flexi Cap Fund Direct Growth": "118955",
     "Parag Parikh Flexi Cap Fund Direct Growth": "122639",
     "Helios Flexi Cap Fund Direct Growth": "152135",
+    "ICICI Prudential Aggressive Hybrid Fund Direct Growth": "120251",
+    "Bandhan Small Cap Fund Direct Growth": "147946",
+    "Invesco India Smallcap Fund Direct Growth": "145137"
 }
 
 # --- HTTP SESSION CREATOR ---
@@ -59,6 +62,10 @@ def get_custom_session():
 def standardize_holdings(raw_funds):
     standardized = {}
     for fund, holdings in raw_funds.items():
+        # --- FIX: IGNORE THE METADATA ENTRY ---
+        if fund == "_metadata":
+            continue
+            
         clean_fund_name = fund
         if fund == "HDFC Flexi Cap": clean_fund_name = "HDFC Flexi Cap Fund Direct Growth"
         elif fund == "Parag Parikh Flexi Cap": clean_fund_name = "Parag Parikh Flexi Cap Fund Direct Growth"
@@ -507,7 +514,7 @@ def main():
     st.dataframe(
         styled_summary, 
         hide_index=True, 
-        width="stretch",
+        use_container_width=True,
         column_config={
             "Prev NAV": st.column_config.Column(help="The official AMFI End-Of-Day NAV from the previous trading session."),
             "Est. Intraday NAV": st.column_config.Column(help="Projected live NAV estimated using constituent real-time prices."),
@@ -532,12 +539,12 @@ def main():
         cmap = {"Strong Buy": "#ff4b4b", "Medium Buy": "#f59e0b", "Hold Cash": "#00c853"}
         fig = px.bar(chart_df, x="Fund", y="Est. NAV Change (%)", color="Signal", color_discrete_map=cmap, title="Estimated Live NAV Drop (%)")
         fig.update_layout(template="plotly_dark")
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
         hist_df = fetch_historical_mf_data()
         if not hist_df.empty:
             fig2 = px.line(hist_df, x="Date", y="Normalized", color="Fund", template="plotly_dark", title="30-Day Historical NAV Performance (Normalized to 100)")
-            st.plotly_chart(fig2, width="stretch")
+            st.plotly_chart(fig2, use_container_width=True)
 
     with t2:
         st.caption("Cross-fund fundamental comparison based on portfolio weighted metrics from institutional equity analysts.")
@@ -550,7 +557,7 @@ def main():
                 "Valuation Coverage (%)": "{:.1f}%"
             }, na_rep="N/A").map(style_negative_positive, subset=["Target Fair Upside (%)"]),
             hide_index=True,
-            width="stretch",
+            use_container_width=True,
             column_config={
                 "Weighted P/E": st.column_config.Column(help="Portfolio Price-to-Earnings Ratio. Lower indicates better relative value."),
                 "Weighted P/B": st.column_config.Column(help="Portfolio Price-to-Book Ratio."),
@@ -600,7 +607,7 @@ def main():
                     "ROE (%)": "{:.2f}%"
                 }, na_rep="N/A").map(style_negative_positive, subset=["Fair Upside (%)"]),
                 hide_index=True,
-                width="stretch",
+                use_container_width=True,
                 column_config={
                     "Fair Upside (%)": st.column_config.Column(help="Potential return to institutional mean consensus fair value target."),
                     "Target Low": st.column_config.Column(help="Conservative bear-case target price."),
@@ -616,7 +623,7 @@ def main():
             if donut_data:
                 fig3 = px.pie(pd.DataFrame(donut_data), values='Weight', names='Stock', hole=0.4, template="plotly_dark")
                 fig3.update_traces(textposition='inside', textinfo='percent+label')
-                st.plotly_chart(fig3, width="stretch")
+                st.plotly_chart(fig3, use_container_width=True)
 
     with t5:
         st.caption("Live AI Sentiment Analysis based on recent news headlines from Google News RSS.")
@@ -625,7 +632,7 @@ def main():
             st.dataframe(
                 fund_sent_df.style.map(style_sentiment, subset=["Fund Sentiment"]), 
                 hide_index=True, 
-                width="stretch",
+                use_container_width=True,
                 column_config={
                     "Aggregated Score": st.column_config.Column(help="Weighted sum of polarity scores (-1.0 to 1.0) for the fund's underlying stocks."),
                     "Fund Sentiment": st.column_config.Column(help="Overall tone of the media coverage for the fund's portfolio.")
@@ -654,7 +661,7 @@ def main():
                         "NLP Polarity": "{:.3f}"
                     }).map(style_sentiment, subset=["Sentiment"]),
                     hide_index=True,
-                    width="stretch"
+                    use_container_width=True
                 )
                 
                 # Display Actual Headlines inside Expander
@@ -718,7 +725,7 @@ def main():
                     st.dataframe(
                         styled_stocks, 
                         hide_index=True, 
-                        width="stretch",
+                        use_container_width=True,
                         column_config={
                             "Price": st.column_config.Column(help="The Last Traded Price (LTP) on the exchange."),
                             "Weight": st.column_config.Column(help="The percentage allocation in the fund."),
