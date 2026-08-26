@@ -1,10 +1,10 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
 import plotly.express as px
 from datetime import datetime
 import pytz
 import requests
-import yfinance as yf
 import json
 import concurrent.futures
 import time
@@ -55,12 +55,16 @@ st.markdown(
 # --- TICKER MAPPING & CLEANUP ---
 TICKER_MAPPING = {
     "KVBANK.NS": "KARURVYSYA.NS",
-    "ETERNAL.NS": "ZOMATO.NS"
+    "ETERNAL.NS": "ZOMATO.NS",     # Enforce Zomato mapping for Yahoo Finance
+    "CENTURYTEX.NS": "ABREL.NS"    # Reroute Century Textiles to Aditya Birla Real Estate
 }
 
 INVALID_YF_TICKERS = {
     "ADITYAINFO.NS", 
-    "ATHERENERGY.NS"
+    "ATHERENERGY.NS",
+    "last_updated",
+    "description",
+    "CASH"
 }
 
 # --- CORRECTED OFFICIAL AMFI SCHEME CODES ---
@@ -75,7 +79,6 @@ mf_amfi_codes = {
 
 # --- HTTP SESSION CREATOR ---
 def get_custom_session():
-    """Creates a custom requests session with browser headers to prevent Yahoo 401 blocks."""
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -84,52 +87,61 @@ def get_custom_session():
     })
     return session
 
-def standardize_holdings(raw_funds):
-    standardized = {}
-    for fund, holdings in raw_funds.items():
-        # EXPLICITLY NUKE METADATA TO FIX UI BUG
-        if fund == "_metadata" or fund.startswith("_"):
-            continue
-            
-        clean_fund_name = fund
-        if fund == "HDFC Flexi Cap": clean_fund_name = "HDFC Flexi Cap Fund Direct Growth"
-        elif fund == "Parag Parikh Flexi Cap": clean_fund_name = "Parag Parikh Flexi Cap Fund Direct Growth"
-        elif fund == "Helios Flexi Cap": clean_fund_name = "Helios Flexi Cap Fund Direct Growth"
-        
-        std_holdings = {}
-        if isinstance(holdings, dict):
-            for ticker, data in holdings.items():
-                if ticker in INVALID_YF_TICKERS:
-                    continue
-                    
-                clean_ticker = TICKER_MAPPING.get(ticker, ticker)
-                
-                if isinstance(data, dict):
-                    std_holdings[clean_ticker] = {
-                        "name": data.get("name", clean_ticker.replace(".NS", "")),
-                        "weight": float(data.get("weight", 0.0))
-                    }
-                elif isinstance(data, (int, float)):
-                    std_holdings[clean_ticker] = {"name": clean_ticker.replace(".NS", ""), "weight": float(data)}
-                else:
-                    std_holdings[clean_ticker] = {"name": str(data), "weight": 0.0}
-        standardized[clean_fund_name] = std_holdings
-    return standardized
-
 @st.cache_data(ttl=3600)
-def load_holdings():
+def load_holdings_v2():
     try:
         with open("holdings.json", "r") as file:
             raw_data = json.load(file)
-            return standardize_holdings(raw_data)
-    except FileNotFoundError:
-        st.error("Holdings file not found. Please ensure holdings.json is available.")
-        return {}
-    except json.JSONDecodeError:
-        st.error("Error reading holdings.json. Ensure it is valid JSON.")
+            
+            standardized = {}
+            for fund, holdings in raw_data.items():
+                # EXPLICITLY NUKE METADATA
+                if fund == "_metadata" or fund.startswith("_"):
+                    continue
+                
+                clean_fund_name = fund
+                if fund == "HDFC Flexi Cap": clean_fund_name = "HDFC Flexi Cap Fund Direct Growth"
+                elif fund == "Parag Parikh Flexi Cap": clean_fund_name = "Parag Parikh Flexi Cap Fund Direct Growth"
+                elif fund == "Helios Flexi Cap": clean_fund_name = "Helios Flexi Cap Fund Direct Growth"
+                
+                std_holdings = {}
+                if isinstance(holdings, dict):
+                    for ticker, data in holdings.items():
+                        # Silence unlisted stocks / IPOs / Metadata
+                        if ticker in INVALID_YF_TICKERS or ticker.startswith("_"):
+                            continue
+                        
+                        # Apply mapping (Eternal -> Zomato, CenturyTex -> ABREL)
+                        clean_ticker = TICKER_MAPPING.get(ticker, ticker)
+                        
+                        if isinstance(data, dict):
+                            stock_name = data.get("name", clean_ticker.replace(".NS", ""))
+                            # Force Zomato naming in UI
+                            if clean_ticker == "ZOMATO.NS" or "ETERNAL" in stock_name.upper():
+                                stock_name = "Zomato"
+                                
+                            std_holdings[clean_ticker] = {
+                                "name": stock_name,
+                                "weight": float(data.get("weight", 0.0))
+                            }
+                        elif isinstance(data, (int, float)):
+                            std_holdings[clean_ticker] = {"name": clean_ticker.replace(".NS", ""), "weight": float(data)}
+                        else:
+                            std_holdings[clean_ticker] = {"name": str(data), "weight": 0.0}
+                
+                if std_holdings:
+                    # Mathematically normalize weights to ensure they equal 100% locally
+                    total_weight = sum([v["weight"] for v in std_holdings.values()])
+                    if total_weight > 0:
+                        for k in std_holdings:
+                            std_holdings[k]["weight"] = std_holdings[k]["weight"] / total_weight
+                    standardized[clean_fund_name] = std_holdings
+            return standardized
+    except Exception as e:
+        st.error(f"Error loading holdings: {e}")
         return {}
 
-funds = load_holdings()
+funds = load_holdings_v2()
 
 # --- YFINANCE DATA SCRAPERS ---
 @st.cache_data(ttl=60)
@@ -310,28 +322,30 @@ def fetch_historical_mf_data(period="1mo"):
         if not df.empty:
             cutoff = df["date"].max() - pd.Timedelta(days=30)
             df = df[df["date"] >= cutoff].copy()
-            df["Normalized"] = (df["nav"] / df["nav"].iloc[0]) * 100
-            df["Fund"] = name
-            df_list.append(df.rename(columns={"date": "Date"}))
+            if not df.empty:
+                df["Normalized"] = (df["nav"] / df["nav"].iloc[0]) * 100
+                df["Fund"] = name
+                df_list.append(df.rename(columns={"date": "Date"}))
     return pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
 
 # --- COLOR FORMATTING FUNCTIONS ---
 def style_negative_positive(val):
+    if pd.isna(val): return ''
     if isinstance(val, (int, float)):
-        if val > 0: return 'color: #00c853;'
-        elif val < 0: return 'color: #ff4b4b;'
+        if val > 0: return 'color: #089981;'
+        elif val < 0: return 'color: #f23645;'
         else: return 'color: #808495;'
     return ''
 
 def style_signal(val):
-    if val == "Strong Buy": return 'color: #ff4b4b; font-weight: 700;'
+    if val == "Strong Buy": return 'color: #f23645; font-weight: 700;'
     elif val == "Medium Buy": return 'color: #f59e0b; font-weight: 700;'
-    elif val == "Hold Cash": return 'color: #00c853; font-weight: 700;'
+    elif val == "Hold Cash": return 'color: #089981; font-weight: 700;'
     return ''
 
 def style_sentiment(val):
-    if val == "Bullish": return 'color: #00c853; font-weight: 700;'
-    elif val == "Bearish": return 'color: #ff4b4b; font-weight: 700;'
+    if val == "Bullish": return 'color: #089981; font-weight: 700;'
+    elif val == "Bearish": return 'color: #f23645; font-weight: 700;'
     elif val == "Neutral": return 'color: #808495; font-weight: 700;'
     return ''
 
@@ -495,7 +509,7 @@ def main():
     
     if rec is not None:
         impact = rec['Est. NAV Change (%)']
-        impact_str = f"{impact:.2f}%" if pd.notna(impact) else "N/A"
+        impact_str = f"{impact:+.2f}%" if pd.notna(impact) else "N/A"
         
         c3.metric(
             "Top Opportunity Signal", 
@@ -506,9 +520,12 @@ def main():
         
         # --- PREMIUM ALERT BANNER ---
         signal_val = rec['Signal']
-        banner_color = "#ff4b4b" if signal_val == "Strong Buy" else "#f59e0b" if signal_val == "Medium Buy" else "#00c853"
-        bg_color = "rgba(255, 75, 75, 0.15)" if signal_val == "Strong Buy" else "rgba(245, 158, 11, 0.15)" if signal_val == "Medium Buy" else "rgba(0, 200, 83, 0.12)"
+        banner_color = "#f23645" if signal_val == "Strong Buy" else "#f59e0b" if signal_val == "Medium Buy" else "#089981"
+        bg_color = "rgba(242, 54, 69, 0.15)" if signal_val == "Strong Buy" else "rgba(245, 158, 11, 0.15)" if signal_val == "Medium Buy" else "rgba(8, 153, 129, 0.12)"
         icon = "🚨" if signal_val == "Strong Buy" else "⚡" if signal_val == "Medium Buy" else "🛡️"
+        
+        # Dynamic Move Color matching market sentiment directly
+        move_color = "#f23645" if pd.notna(impact) and impact < 0 else "#089981" if pd.notna(impact) and impact > 0 else "#94a3b8"
         
         st.markdown(f"""
         <div style="border: 1px solid {banner_color}; background-color: {bg_color}; padding: 22px; border-radius: 12px; text-align: center; margin: 20px 0;">
@@ -519,7 +536,7 @@ def main():
                 Target Fund: <strong>{rec['Fund']}</strong>
             </div>
             <div style="font-size: 1.15rem; color: #94a3b8; margin-top: 6px;">
-                Estimated Intraday Move: <span style="color: {banner_color}; font-weight: bold; font-size: 1.25rem;">{impact_str}</span>
+                Estimated Intraday Move: <span style="color: {move_color}; font-weight: bold; font-size: 1.25rem;">{impact_str}</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -535,8 +552,8 @@ def main():
         impact = getattr(row, '_4') # _4 represents Est. NAV Change (%)
         fund_name = row.Fund
         
-        val_class = "fund-val-red" if impact < 0 else "fund-val-green"
-        sign = "+" if impact > 0 else ""
+        val_class = "fund-val-red" if pd.notna(impact) and impact < 0 else "fund-val-green"
+        sign = "+" if pd.notna(impact) and impact > 0 else ""
         
         comp_cols[i % 3].markdown(
             f"""
@@ -589,7 +606,7 @@ def main():
     
     with t1:
         chart_df = summary.drop_duplicates(subset=["Fund"]).copy()
-        cmap = {"Strong Buy": "#ff4b4b", "Medium Buy": "#f59e0b", "Hold Cash": "#00c853"}
+        cmap = {"Strong Buy": "#f23645", "Medium Buy": "#f59e0b", "Hold Cash": "#089981"}
         fig = px.bar(chart_df, x="Fund", y="Est. NAV Change (%)", color="Signal", color_discrete_map=cmap, title="Estimated Live NAV Drop (%)")
         fig.update_layout(template="plotly_dark")
         st.plotly_chart(fig, use_container_width=True)
@@ -775,8 +792,8 @@ def main():
                             styled_stocks = df_stocks.style.format({
                                 "Price": "₹{:.2f}", 
                                 "Weight": "{:.1f}%", 
-                                "Live Change": "{:.2f}%", 
-                                "NAV Impact": "{:.3f}%"
+                                "Live Change": "{:+.2f}%", 
+                                "NAV Impact": "{:+.3f}%"
                             }, na_rep="N/A").map(style_negative_positive, subset=["Live Change", "NAV Impact"])
                             
                             st.dataframe(
